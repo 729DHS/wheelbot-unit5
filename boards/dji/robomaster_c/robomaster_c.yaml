@@ -1,0 +1,17 @@
+identifier: robomaster_c
+name: RoboMaster Type C Board
+type: mcu
+arch: arm
+toolchain:
+  - zephyr
+  - gnuarmemb
+ram: 192
+flash: 1024
+supported:
+  - can
+  - gpio
+  - pwm
+  - sensor
+  - spi
+  - uart
+vendor: dji

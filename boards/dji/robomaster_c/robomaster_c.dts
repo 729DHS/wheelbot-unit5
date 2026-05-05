@@ -1,0 +1,198 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Unit5 串口调试 DTS — USART6 @ 115200 (USB-TTL CH340 直连 PG14/PG9)
+ * 注意: 板子丝印 UART1 (3-pin) 实际对应 STM32 USART6
+ */
+
+/dts-v1/;
+
+#include <st/f4/stm32f407Xg.dtsi>
+#include <st/f4/stm32f407i(e-g)hx-pinctrl.dtsi>
+#include <zephyr/dt-bindings/dma/stm32_dma.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/ {
+	model = "RoboMaster Type C Board";
+	compatible = "dji,robomaster-c", "st,stm32f407";
+
+	chosen {
+		zephyr,console = &usart6;
+		zephyr,shell-uart = &usart2;
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		zephyr,dtcm = &ccm0;
+		zephyr,canbus = &can1;
+	};
+
+	aliases {
+		led0 = &blue_led;
+		led1 = &green_led;
+		led2 = &red_led;
+		watchdog0 = &iwdg;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		blue_led: led_0 {
+			gpios = <&gpioh 10 GPIO_ACTIVE_HIGH>;
+			label = "Blue LED";
+		};
+
+		green_led: led_1 {
+			gpios = <&gpioh 11 GPIO_ACTIVE_HIGH>;
+			label = "Green LED";
+		};
+
+		red_led: led_2 {
+			gpios = <&gpioh 12 GPIO_ACTIVE_HIGH>;
+			label = "Red LED";
+		};
+	};
+};
+
+&clk_hse {
+	clock-frequency = <DT_FREQ_M(12)>;
+	status = "okay";
+};
+
+&pll {
+	div-m = <6>;
+	mul-n = <168>;
+	div-p = <2>;
+	div-q = <7>;
+	clocks = <&clk_hse>;
+	status = "okay";
+};
+
+&rcc {
+	clocks = <&pll>;
+	clock-frequency = <DT_FREQ_M(168)>;
+	ahb-prescaler = <1>;
+	apb1-prescaler = <4>;
+	apb2-prescaler = <2>;
+};
+
+&usart1 {
+	pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pb7>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	status = "okay";
+};
+
+&usart2 {
+	pinctrl-0 = <&usart2_tx_pa2 &usart2_rx_pa3>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	status = "okay";
+};
+
+&usart3 {
+	pinctrl-0 = <&usart3_rx_pc11>;
+	pinctrl-names = "default";
+	current-speed = <100000>;
+	dmas = <&dma1 3 4 STM32_DMA_PERIPH_TX STM32_DMA_FIFO_FULL>,
+	       <&dma1 1 4 (STM32_DMA_PERIPH_RX | STM32_DMA_MODE_CYCLIC) STM32_DMA_FIFO_FULL>;
+	dma-names = "tx", "rx";
+	status = "okay";
+};
+
+&dma1 {
+	status = "okay";
+};
+
+&usart6 {
+	pinctrl-0 = <&usart6_tx_pg14 &usart6_rx_pg9>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	status = "okay";
+};
+
+&can1 {
+	pinctrl-0 = <&can1_rx_pd0 &can1_tx_pd1>;
+	pinctrl-names = "default";
+	bitrate = <1000000>;
+	status = "okay";
+};
+
+&can2 {
+	pinctrl-0 = <&can2_rx_pb5 &can2_tx_pb6>;
+	pinctrl-names = "default";
+	bitrate = <1000000>;
+	status = "okay";
+};
+
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		code_partition: partition@0 {
+			label = "image-0";
+			reg = <0x00000000 0x000c0000>;
+		};
+
+		storage_partition: partition@c0000 {
+			label = "storage";
+			reg = <0x000c0000 0x00040000>;
+		};
+	};
+};
+
+&spi1 {
+	pinctrl-0 = <&spi1_sck_pb3 &spi1_miso_pb4 &spi1_mosi_pa7>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpioa 4 GPIO_ACTIVE_LOW>,
+		   <&gpiob 0 GPIO_ACTIVE_LOW>;
+	status = "okay";
+
+	bmi088_accel: bmi088-accel@0 {
+		compatible = "bosch,bmi08x-accel";
+		reg = <0>;
+		spi-max-frequency = <5250000>;
+		spi-cpol;
+		spi-cpha;
+		int-gpios = <&gpioc 4 GPIO_ACTIVE_LOW>;
+		int1-map-io = <0x01>;
+		int1-conf-io = <0x08>;
+		int2-map-io = <0x01>;
+		int2-conf-io = <0x08>;
+		accel-hz = "800";
+		accel-fs = <3>;
+	};
+
+	bmi088_gyro: bmi088-gyro@1 {
+		compatible = "bosch,bmi08x-gyro";
+		reg = <1>;
+		spi-max-frequency = <5250000>;
+		spi-cpol;
+		spi-cpha;
+		int-gpios = <&gpioc 5 GPIO_ACTIVE_LOW>;
+		int3-4-map-io = <0x01>;
+		int3-4-conf-io = <0x00>;
+		gyro-hz = "1000_116";
+		gyro-fs = <2000>;
+	};
+};
+
+&timers4 {
+	status = "okay";
+
+	buzzer_pwm: pwm {
+		pinctrl-0 = <&tim4_ch3_pd14>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+};
+
+&timers10 {
+	status = "okay";
+
+	imu_heater_pwm: pwm {
+		pinctrl-0 = <&tim10_ch1_pf6>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+};

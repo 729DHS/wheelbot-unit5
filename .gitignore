@@ -1,0 +1,14 @@
+build/
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+.direnv/
+.envrc
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
