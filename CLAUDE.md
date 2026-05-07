@@ -40,16 +40,16 @@ python3 tools/plot_feedback.py --port /dev/ttyACM0     # 实时绘图
 ## 架构
 
 ```
-main.c                           # 主入口: bringup → 主循环 (5ms)
+main.c                           # 主入口: bringup → 500Hz DWT 忙等控制循环
   ├── dm4310_poll_rx()           #   CAN 消息队列 → 电机状态
   ├── dm4310_hold_positions()    #   位置保持 (饱和赋值=1)
   ├── dm4310_tick()              #   发送 CAN 控制帧 (每 tick 4 台)
-  └── shell_print(CSV)           #   g_csv_enabled 时输出角度流
+  └── shell_print(CSV)           #   50Hz CSV 角度流 (12列, 每10 tick); PROFILE pin PH13 示波器测耗时
 
 dm4310_motor.c                   # MIT 协议驱动
   ├── g_dm4310 (全局状态)        #   bringup 状态机、电机状态、hold 参数
   ├── dm4310_init()              #   CAN1+CAN2 (1Mbps, ONE_SHOT, 全通滤波)
-  ├── drain_rx()                 #   K_MSGQ 取 CAN 帧解析反馈
+  ├── drain_rx()                 #   ISR ring buffer → 主循环浮点解码
   ├── refresh_online_mask()      #   在线位掩码 (超时 500ms)
   ├── dm4310_pack_control()      #   浮点 → 8 字节 MIT 控制帧
   ├── dm4310_decode_feedback()   #   8 字节 CAN 帧 → 电机状态
@@ -73,15 +73,15 @@ dm4310_motor.h                   # 协议常量、结构体、API 声明
 **CAN 总线分配**:
 - CAN1 (PD0/PD1, 1Mbps): M1+M2 (左腿)
 - CAN2 (PB5/PB6, 1Mbps): M3+M4 (右腿)
-- 消息队列: `K_MSGQ_DEFINE(dm4310_can_rx_msgq, 64 frames)`
+- ISR ring buffer: `raw_frame_buf[32]` → 主循环 drain_rx() 浮点解码
 
 ## 关键配置
 
 | 参数 | 值 | 位置 |
 |------|-----|------|
 | Console + Shell UART | USART6 (PG14 TX / PG9 RX) @ 115200 | DTS `chosen` |
-| 控制周期 | 5ms (200Hz) | `main.c:CTRL_PERIOD_MS` |
-| CSV 输出周期 | 10ms (100Hz) | `main.c:PRINT_PERIOD_MS` |
+| 控制周期 | 2ms (500Hz) DWT 忙等 | `main.c:CYCLES_PER_TICK` |
+| CSV 输出周期 | 20ms (50Hz, 每10 tick) | `main.c:CSV_PERIOD_TICKS` |
 | CAN 波特率 | 1Mbps | DTS `&can1/&can2.bitrate` |
 | CAN 发送模式 | ONE_SHOT | `dm4310_motor.c:dm4310_init_bus()` |
 | 默认 KP/KD (bringup 后) | 0.01 / 0.001 | `main.c` |
@@ -89,6 +89,26 @@ dm4310_motor.h                   # 协议常量、结构体、API 声明
 
 **prj.conf 关键项**: `CONFIG_CAN=y`, `CONFIG_UART_ASYNC_API=y`, `CONFIG_CBPRINTF_FP_SUPPORT=y`, `CONFIG_SHELL=y`, `CONFIG_KERNEL_SHELL=y`
 
+
+## DWT 性能分析 & GPIO 分析引脚
+
+
+
+- **DWT CYCCNT** (Cortex-M4 硬件周期计数器): 每 tick 实测控制循环耗时 (us)，写入 CSV `dt_us` 列
+
+- **分析引脚 PH13**: 循环入口 HIGH / 出口 LOW，示波器测量真实耗时
+
+  - 配置: output push-pull，直接寄存器写 GPIOH BSRR (零延迟)
+
+  - 用法: `PROFILE_HIGH()` → 控制逻辑 → `PROFILE_LOW()` → 忙等
+
+- **500Hz 固定周期**: DWT 忙等到下一个 2ms 边界，`(int32_t)(DWT->CYCCNT - next_wake) < 0`
+
+  - 处理 32-bit 翻转 (每 25.5s)，int32_t 符号减法保证正确
+
+- **CPU 频率**: 168MHz (SYSCLK), 2ms = 336,000 cycles
+
+- **shell_print 降频**: CSV 50Hz (每10 tick)，遥测 25Hz (每20 tick，与 CSV 错开 5 tick)
 ## Shell 与 CSV 共存机制
 
 - Shell 和 CSV 角度流共享 USART6，**默认 CSV 关闭**
@@ -110,13 +130,16 @@ dm4310_motor.h                   # 协议常量、结构体、API 声明
 ## 串口输出格式
 
 ```
-# CSV header (motor csv on 后通过 shell_print 输出)
-t_ms,M1_rad,M2_rad,M3_rad,M4_rad
-12345,0.1234,-0.2345,0.4567,-0.7890
+# CSV header (motor csv on 时自动输出)
+t_ms,m1,m2,m3,m4,t1,t2,t3,t4,pitch,pitch_rate,dt_us
+12345,0.1234,-0.2345,0.4567,-0.7890,0.015,-0.020,0.005,-0.010,0.0000,0.00,42
 ```
 
 - 角度 rad，上电 bringup (ZERO) 后当前位置自动置零
-- 100Hz (每 10ms)，Shell 和 CSV 交替输出
+- 力矩 Nm (t1-t4)，来自 DM4310 反馈帧解析 (∝ iq)
+- pitch/pitch_rate：BMI088 暂未接入，填 0 占位
+- dt_us：DWT 实测控制循环耗时 (不含忙等)
+- 50Hz (每 20ms / 10 tick)，遥测 25Hz 错开避免同时 shell_print
 - M1/M2 = CAN1 (左腿), M3/M4 = CAN2 (右腿)
 
 ## 调试方法 (三层递进)

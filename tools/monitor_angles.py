@@ -46,8 +46,22 @@ def clear_screen():
     sys.stdout.flush()
 
 
-# 匹配 CSV 行: 整数,浮点,浮点,浮点,浮点
-CSV_RE = re.compile(r"(\d+),(-?\d+\.\d+),(-?\d+\.\d+),(-?\d+\.\d+),(-?\d+\.\d+)")
+# 匹配 CSV 行: t_ms,m1,m2,m3,m4[,t1,t2,t3,t4,pitch,pitch_rate,dt_us]
+# 兼容 5 列 (旧格式) 和 12 列 (新格式)
+CSV_RE = re.compile(
+    r"(\d+),"                           # t_ms
+    r"(-?\d+\.\d+),"                     # m1
+    r"(-?\d+\.\d+),"                     # m2
+    r"(-?\d+\.\d+),"                     # m3
+    r"(-?\d+\.\d+)"                      # m4
+    r"(?:,(-?\d+\.\d+)"                  # t1 (可选)
+    r",(-?\d+\.\d+)"                     # t2 (可选)
+    r",(-?\d+\.\d+)"                     # t3 (可选)
+    r",(-?\d+\.\d+)"                     # t4 (可选)
+    r",(-?\d+\.\d+)"                     # pitch (可选)
+    r",(-?\d+\.\d+)"                     # pitch_rate (可选)
+    r",(\d+))?"                           # dt_us (可选)
+)
 
 
 def main():
@@ -108,6 +122,16 @@ def main():
             angles[1] = float(m.group(3))
             angles[2] = float(m.group(4))
             angles[3] = float(m.group(5))
+            torques = None
+            dt_us = 0
+            if m.lastindex and m.lastindex >= 12:
+                torques = [
+                    float(m.group(6)),
+                    float(m.group(7)),
+                    float(m.group(8)),
+                    float(m.group(9)),
+                ]
+                dt_us = int(m.group(12))
 
             line_count += 1
             elapsed = time.time() - start_time
@@ -117,6 +141,8 @@ def main():
 
             print("\033[1;36m=== DM4310 电机角度 ===\033[0m")
             print(f"  时间: {t_ms} ms | 速率: {rate:.1f} Hz | 运行: {elapsed:.0f} s | 端口: {args.port}")
+            if dt_us:
+                print(f"  loop_dt: {dt_us} us (DWT 实测)")
             print()
 
             motor_names = [
@@ -130,8 +156,11 @@ def main():
                 deg = rad2deg(rad)
                 color = "\033[1;3%dm" % ((i % 4) + 2)
                 reset = "\033[0m"
+                t_str = ""
+                if torques:
+                    t_str = f"  τ={torques[i]:+.3f}Nm"
 
-                print(f"  {color}{name}{reset}")
+                print(f"  {color}{name}{reset}{t_str}")
                 print(f"    {bar(rad):22s} {rad:+8.4f} rad  {deg:+8.2f}°")
                 print()
 

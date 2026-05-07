@@ -1,49 +1,152 @@
+/**
+ * linkage_kinematics.c — implementation
+ *
+ * All trig functions use arm_math.h (CMSIS-DSP) for STM32F4 FPU acceleration.
+ * arm_sin_f32 / arm_cos_f32 take radians, return [-1, 1].
+ */
+
 #include "linkage_kinematics.h"
+#include <math.h>  /* acosf, atan2f, sqrtf, fabsf — not available in arm_math */
 
-#include <math.h>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846f
+#endif
 
-void lk_forward(const struct lk_joint_angles *angles, struct lk_pose *out)
+/* --------------------------------------------------
+ *  IK:  h, phi  →  theta_a, theta_b
+ *
+ *  In mechanism frame (+X right +Y up):
+ *    vertical-down = direction (-π/2).
+ *    phi measured clockwise from vertical-down.
+ *    clockwise in standard math = negative.
+ *
+ *    angle(OP7) = -π/2 - phi
+ *    P7 = h * (cos(angle), sin(angle))
+ *       = h * (-sin(phi), -cos(phi))
+ * -------------------------------------------------- */
+
+lk_error_t lk_inverse(float h, float phi, int elbow,
+                      const Kinematics_Config *cfg,
+                      float *out_theta_a, float *out_theta_b)
 {
-	out->x_mm = LK_L1_MM * cosf(angles->theta_a_rad) +
-		    LK_L2_MM * cosf(angles->theta_b_rad);
-	out->y_mm = LK_L1_MM * sinf(angles->theta_a_rad) +
-		    LK_L2_MM * sinf(angles->theta_b_rad);
+    /* --- range check --- */
+    if (h < LK_H_MIN_MM - 1e-4f || h > LK_H_MAX_MM + 1e-4f) {
+        return LK_ERR_H_OUT_OF_RANGE;
+    }
+
+    const float L1 = LK_L1_MM;
+    const float L2 = LK_L2_MM;
+
+    /* P7 in mechanism frame: phi=0 → OP7 = (0, -h) */
+    float s_phi, c_phi;
+    s_phi = sinf(phi); c_phi = cosf(phi);
+    float Px = -h * s_phi;
+    float Py = -h * c_phi;
+
+    float r = sqrtf(Px * Px + Py * Py);
+
+    /* degenerate: r ≈ 0 */
+    if (r < 1e-6f) {
+        return LK_ERR_UNREACHABLE;
+    }
+
+    /* Cosine law: (r² + L1² - L2²) / (2·L1·r) */
+    float r2 = r * r;
+    float L1_2 = L1 * L1;
+    float L2_2 = L2 * L2;
+    float cos_alpha = (r2 + L1_2 - L2_2) / (2.0f * L1 * r);
+
+    /* Clamp for float rounding safety */
+    cos_alpha = lk_clamp(cos_alpha, -1.0f, 1.0f);
+    float alpha = acosf(cos_alpha);
+
+    float phi_vec = atan2f(Py, Px);
+
+    /* Select elbow branch */
+    float sign = (elbow >= 0) ? 1.0f : -1.0f;
+    float theta_a = phi_vec + sign * alpha;
+    theta_a = lk_wrap_pi(theta_a);
+
+    /* theta_b from geometry */
+    float sin_a, cos_a;
+    sin_a = sinf(theta_a); cos_a = cosf(theta_a);
+    float theta_b = atan2f(Py - L1 * sin_a,
+                           Px - L1 * cos_a);
+
+    *out_theta_a = theta_a;
+    *out_theta_b = theta_b;
+
+    (void)cfg; /* IK returns mechanism-frame angles, caller applies offset */
+    return LK_OK;
 }
 
-int lk_inverse(const struct lk_pose *target, int elbow, struct lk_joint_angles *out)
+lk_error_t lk_inverse_continuous(float h, float phi,
+                                 float prev_theta_a, float prev_theta_b,
+                                 const Kinematics_Config *cfg,
+                                 float *out_theta_a, float *out_theta_b)
 {
-	float r = sqrtf(target->x_mm * target->x_mm + target->y_mm * target->y_mm);
-	float cos_alpha;
-	float alpha;
-	float theta_a, theta_b;
+    float ta_up, tb_up, ta_dn, tb_dn;
+    lk_error_t e_up = lk_inverse(h, phi, +1, cfg, &ta_up, &tb_up);
+    lk_error_t e_dn = lk_inverse(h, phi, -1, cfg, &ta_dn, &tb_dn);
 
-	if (r < LK_WORKSPACE_MIN_MM || r > LK_WORKSPACE_MAX_MM) {
-		return -1;
-	}
+    if (e_up != LK_OK && e_dn != LK_OK) {
+        return LK_ERR_UNREACHABLE;
+    }
+    if (e_up != LK_OK) {
+        *out_theta_a = ta_dn; *out_theta_b = tb_dn;
+        return LK_OK;
+    }
+    if (e_dn != LK_OK) {
+        *out_theta_a = ta_up; *out_theta_b = tb_up;
+        return LK_OK;
+    }
 
-	cos_alpha = (r * r + LK_L1_MM * LK_L1_MM - LK_L2_MM * LK_L2_MM) /
-		    (2.0f * LK_L1_MM * r);
+    /* both valid → pick closest to previous */
+    float da_up  = lk_wrap_pi(ta_up - prev_theta_a);
+    float db_up  = lk_wrap_pi(tb_up - prev_theta_b);
+    float da_dn  = lk_wrap_pi(ta_dn - prev_theta_a);
+    float db_dn  = lk_wrap_pi(tb_dn - prev_theta_b);
 
-	/* 浮点误差钳位 */
-	if (cos_alpha > 1.0f) {
-		cos_alpha = 1.0f;
-	} else if (cos_alpha < -1.0f) {
-		cos_alpha = -1.0f;
-	}
+    float dist_up = da_up * da_up + db_up * db_up;
+    float dist_dn = da_dn * da_dn + db_dn * db_dn;
 
-	alpha = acosf(cos_alpha);
+    if (dist_up <= dist_dn) {
+        *out_theta_a = ta_up; *out_theta_b = tb_up;
+    } else {
+        *out_theta_a = ta_dn; *out_theta_b = tb_dn;
+    }
+    return LK_OK;
+}
 
-	if (elbow == LK_ELBOW_UP) {
-		theta_a = atan2f(target->y_mm, target->x_mm) + alpha;
-	} else {
-		theta_a = atan2f(target->y_mm, target->x_mm) - alpha;
-	}
+/* --------------------------------------------------
+ *  FK:  theta_a, theta_b  →  h, phi
+ *
+ *  P7 = L1*[cos(θa), sin(θa)] + L2*[cos(θb), sin(θb)]
+ *  h = |P7|
+ *  phi = -atan2(P7_y, P7_x) - π/2   (clockwise from vertical-down)
+ * -------------------------------------------------- */
 
-	theta_b = atan2f(target->y_mm - LK_L1_MM * sinf(theta_a),
-			  target->x_mm - LK_L1_MM * cosf(theta_a));
+lk_error_t lk_forward(float theta_a, float theta_b,
+                      const Kinematics_Config *cfg,
+                      float *out_h, float *out_phi)
+{
+    const float L1 = LK_L1_MM;
+    const float L2 = LK_L2_MM;
 
-	out->theta_a_rad = theta_a;
-	out->theta_b_rad = theta_b;
+    float sin_a, cos_a, sin_b, cos_b;
+    sin_a = sinf(theta_a); cos_a = cosf(theta_a);
+    arm_sin_cos_f32(theta_b, &sin_b, &cos_b);
 
-	return 0;
+    float Px = L1 * cos_a + L2 * cos_b;
+    float Py = L1 * sin_a + L2 * sin_b;
+
+    *out_h = sqrtf(Px * Px + Py * Py);
+
+    /* angle(OP7) in math frame = atan2(Py, Px)
+     * phi = -(angle + π/2)   (clockwise from vertical-down) */
+    *out_phi = -atan2f(Py, Px) - (M_PI / 2.0f);
+    *out_phi = lk_wrap_pi(*out_phi);
+
+    (void)cfg;
+    return LK_OK;
 }

@@ -9,7 +9,8 @@ DM4310 反馈数据实时可视化
   # 从保存的 CSV 文件读取
   python plot_feedback.py --file data.csv
 
-CSV 格式: t_ms,M1_rad,M2_rad,M3_rad,M4_rad
+CSV 格式 (V1): t_ms,M1_rad,M2_rad,M3_rad,M4_rad
+CSV 格式 (V2): t_ms,m1,m2,m3,m4,t1,t2,t3,t4,pitch,pitch_rate,dt_us
 
 需要: pip install pyserial matplotlib
 """
@@ -39,15 +40,24 @@ def parse_args():
 class DataStore:
     def __init__(self):
         self.data = {1: ([], []), 2: ([], []), 3: ([], []), 4: ([], [])}
+        self.torque = {1: ([], []), 2: ([], []), 3: ([], []), 4: ([], [])}
+        self.dt = ([], [])  # (t_rel, dt_us)
         self.t0 = None
 
-    def add(self, t_ms, m1, m2, m3, m4):
+    def add(self, t_ms, m1, m2, m3, m4, t1=None, t2=None, t3=None, t4=None, dt_us=None):
         if self.t0 is None:
             self.t0 = t_ms
         t_rel = (t_ms - self.t0) / 1000.0
         for mid, val in [(1, m1), (2, m2), (3, m3), (4, m4)]:
             self.data[mid][0].append(t_rel)
             self.data[mid][1].append(val)
+        if t1 is not None:
+            for mid, tval in [(1, t1), (2, t2), (3, t3), (4, t4)]:
+                self.torque[mid][0].append(t_rel)
+                self.torque[mid][1].append(tval)
+        if dt_us is not None:
+            self.dt[0].append(t_rel)
+            self.dt[1].append(dt_us)
 
 
 def read_serial(port, baud, store, save_file=None):
@@ -73,7 +83,16 @@ def read_serial(port, baud, store, save_file=None):
             m2 = float(parts[2])
             m3 = float(parts[3])
             m4 = float(parts[4])
-            store.add(t_ms, m1, m2, m3, m4)
+            kwargs = {}
+            if len(parts) >= 12:
+                kwargs = {
+                    "t1": float(parts[5]),
+                    "t2": float(parts[6]),
+                    "t3": float(parts[7]),
+                    "t4": float(parts[8]),
+                    "dt_us": int(parts[11]),
+                }
+            store.add(t_ms, m1, m2, m3, m4, **kwargs)
         except (ValueError, IndexError):
             continue
 
@@ -93,7 +112,16 @@ def read_file(filepath, store):
             m2 = float(parts[2])
             m3 = float(parts[3])
             m4 = float(parts[4])
-            store.add(t_ms, m1, m2, m3, m4)
+            kwargs = {}
+            if len(parts) >= 12:
+                kwargs = {
+                    "t1": float(parts[5]),
+                    "t2": float(parts[6]),
+                    "t3": float(parts[7]),
+                    "t4": float(parts[8]),
+                    "dt_us": int(parts[11]),
+                }
+            store.add(t_ms, m1, m2, m3, m4, **kwargs)
             count += 1
     print(f"Loaded {count} frames from {filepath}")
 

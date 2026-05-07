@@ -7,4 +7,7 @@ target_sources(app PRIVATE
 	src/main.c
 	src/dm4310_motor.c
 	src/shell_commands.c
+	src/linkage_kinematics.c
+	src/leg_control.c
+	src/motor_debug.c
 )

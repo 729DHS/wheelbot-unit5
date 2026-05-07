@@ -27,7 +27,14 @@ def parse_args():
     return p.parse_args()
 
 
-CSV_RE = re.compile(r"(\d+),(-?\d+\.\d+),(-?\d+\.\d+),(-?\d+\.\d+),(-?\d+\.\d+)")
+# 匹配 CSV 行 (兼容 5 列旧格式和 12 列新格式)
+CSV_RE = re.compile(
+    r"(\d+),"                    # t_ms
+    r"(-?\d+\.\d+),"             # m1
+    r"(-?\d+\.\d+),"             # m2
+    r"(-?\d+\.\d+),"             # m3
+    r"(-?\d+\.\d+)"              # m4 (最少 5 列)
+)
 
 
 def main():

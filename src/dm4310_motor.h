@@ -131,11 +131,22 @@ struct dm4310_driver {
 	float hold_kp[DM4310_MOTOR_COUNT];   /**< 每台电机保持 KP */
 	float hold_kd[DM4310_MOTOR_COUNT];   /**< 每台电机保持 KD */
 	float hold_pos_rad[DM4310_MOTOR_COUNT]; /**< 每台电机目标位置（弧度） */
+	float feedforward_tau[DM4310_MOTOR_COUNT]; /**< 力矩前馈 (Nm, 由运动学计算) */
+	float balance_target_kp;          /**< 站立模式目标 KP (斜坡终点) */
+	float balance_target_kd;          /**< 站立模式目标 KD (斜坡终点) */
+	uint32_t balance_ramp_remaining;  /**< 站立模式增益爬坡剩余 tick */
+	uint32_t balance_ramp_total;      /**< 站立模式增益爬坡总 tick (线性插值分母) */
 	struct dm4310_motor_status motor[DM4310_MOTOR_COUNT]; /**< 四台电机状态 */
 };
 
 /** @brief DM4310 驱动全局实例 */
 extern volatile struct dm4310_driver g_dm4310;
+
+/** @brief 电机零点偏置 (robot cali 设置)，下发目标时叠加 */
+extern float g_dm_offset[DM4310_MOTOR_COUNT];
+
+/** @brief 平衡环 Pitch 零点偏置 (balance pitch_zero 设置) */
+extern float g_balance_pitch_zero_rad;
 
 /* GDB 调试命令队列 (主循环消费，可被 GDB set 触发) */
 #define GDB_CMD_NONE    0
@@ -235,6 +246,26 @@ bool dm4310_is_online(uint8_t motor_id);
  * @return 电机状态结构体指针，ID 无效时返回 NULL
  */
 const volatile struct dm4310_motor_status *dm4310_get(uint8_t motor_id);
+
+/**
+ * @brief 下发单台电机目标位置（叠加零点偏置 + 物理限幅）
+ * @param motor_id  电机 ID（1-4）
+ * @param target_kin 运动学目标位置（弧度），内部自动叠加 g_dm_offset
+ * @return 0 成功，-EINVAL 表示 ID 无效
+ */
+int dm4310_set_pos_with_offset(uint8_t motor_id, float target_kin);
+
+/**
+ * @brief 一键切入站立模式
+ *
+ * 将四台电机从拖动模式 (KP=0.01/KD=0.001) 切换到高刚度站立模式。
+ * 以当前位置为初始目标，逐 tick 阶梯提升 KP/KD 至目标值 (默认 80/1.5)，
+ * 避免增益突变导致过流或抖动。
+ *
+ * @param ramp_ticks  增益爬坡 tick 数（0=瞬切，建议 50-100）
+ * @return 0 成功
+ */
+int dm4310_balance_enable(uint32_t ramp_ticks);
 
 /* === 协议编解码辅助函数（暴露供测试使用） === */
 

@@ -29,7 +29,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/util.h>
 
-K_MSGQ_DEFINE(dm4310_can_rx_msgq, sizeof(struct can_frame), 64, 4);
+/* CAN 反馈帧由 ISR 拷贝到 ring buffer，主循环 drain_rx 解码 (浮点在主循环) */
 
 #define DM4310_OUTPUT_ENABLED 1
 #define DM4310_CAN1_HOME_ENABLED 0
@@ -63,14 +63,47 @@ volatile struct dm4310_driver g_dm4310 = {
 /* GDB 命令队列，主循环消费 */
 volatile uint8_t g_gdb_cmd[DM4310_MOTOR_COUNT];
 
+/* 电机零点偏置 + 平衡环 Pitch 零点 */
+float g_dm_offset[DM4310_MOTOR_COUNT];
+float g_balance_pitch_zero_rad;
+
 static const struct device *can1_dev;
 static const struct device *can2_dev;
+
+/* ISR → 主循环原始 CAN 帧环形缓冲 (ISR 仅做 memcpy, 浮点解码在主循环) */
+#define RAW_FRAME_BUF_SIZE 32
+static struct {
+	struct can_frame frame;
+} raw_frame_buf[RAW_FRAME_BUF_SIZE];
+static volatile uint8_t raw_buf_write_idx;
+static uint8_t raw_buf_read_idx;
 
 static int dm4310_send_raw(uint16_t std_id, const uint8_t data[8]);
 
 static inline const struct device *motor_idx_to_can(uint8_t motor_idx)
 {
 	return (motor_idx < DM4310_MOTORS_ON_CAN1) ? can1_dev : can2_dev;
+}
+
+/**
+ * @brief CAN RX 中断回调 — 仅拷贝原始帧到 ring buffer
+ *
+ * ISR 内不做浮点解析/过滤，只 memcpy 8 字节 CAN 数据到环形缓冲。
+ * 过滤和浮点解码在主循环 drain_rx() 中完成。
+ */
+static void dm4310_can_rx_callback(const struct device *dev, struct can_frame *frame,
+				   void *user_data)
+{
+	uint8_t w = raw_buf_write_idx;
+
+	/* ISR 只做纯数据拷贝, 无分支过滤, 无浮点 */
+	memcpy(&raw_frame_buf[w].frame, frame, sizeof(*frame));
+
+	w++;
+	if (w >= RAW_FRAME_BUF_SIZE) {
+		w = 0;
+	}
+	raw_buf_write_idx = w;
 }
 
 static void put_le_u32(uint8_t data[4], uint32_t value)
@@ -283,34 +316,59 @@ static int dm4310_send_raw(uint16_t std_id, const uint8_t data[8])
  * 跳过寄存器读写/保存响应帧（data[2] = 0x55/0x33/0xAA），
  * 其余帧作为电机反馈解码并更新对应电机状态。
  */
+/**
+ * @brief 从 ISR ring buffer 消费原始帧并解码 (浮点运算在主循环)
+ *
+ * ISR 只做 memcpy 到 raw_frame_buf，所有过滤、位操作和浮点转换在此完成。
+ */
 static void drain_rx(void)
 {
-	struct can_frame frame;
+	uint8_t r = raw_buf_read_idx;
+	uint8_t w = raw_buf_write_idx;
+	struct can_frame *frame;
+	uint8_t motor_id;
+	int p_int, v_int, t_int;
+	uint8_t idx;
 
-	while (k_msgq_get(&dm4310_can_rx_msgq, &frame, K_NO_WAIT) == 0) {
-		struct dm4310_motor_status status = { 0 };
-		uint8_t mid;
+	while (r != w) {
+		frame = &raw_frame_buf[r].frame;
 
-		/* M3508/M2006 反馈帧 CAN ID 在 0x200-0x2FF 范围，必须滤掉，
-		 * 否则 data[0] 碰巧落入 1-4 会覆盖 DM4310 电机状态导致跳变。
-		 * DM4310 反馈帧 ID 不受此限制（可能是 0x00, 0x11+, 1-4 等）。 */
-		if (frame.id >= 0x200U && frame.id <= 0x2FFU) {
-			continue;
+
+		/* 过滤寄存器读写响应帧 (StdId 0x7FF) */
+		if (frame->data[2] == 0x55U || frame->data[2] == 0x33U ||
+		    frame->data[2] == 0xAAU) {
+			goto next;
 		}
 
-		if (frame.data[2] == 0x55U || frame.data[2] == 0x33U || frame.data[2] == 0xAAU) {
-			continue;
+		motor_id = frame->data[0] & 0x0FU;
+		if (motor_id == 0U || motor_id > DM4310_MOTOR_COUNT) {
+			goto next;
 		}
 
-		if (!dm4310_decode_feedback(frame.data, &status)) {
-			continue;
-		}
+		idx = motor_id - 1U;
 
-		mid = (uint8_t)(frame.data[0] & 0x0FU);
-		if (mid >= 1U && mid <= DM4310_MOTOR_COUNT) {
-			g_dm4310.motor[mid - 1U] = status;
+		/* 位操作 + 浮点转换 (主循环上下文, 非 ISR) */
+		p_int = ((int)frame->data[1] << 8) | (int)frame->data[2];
+		v_int = ((int)frame->data[3] << 4) | ((int)frame->data[4] >> 4);
+		t_int = (((int)frame->data[4] & 0x0F) << 8) | (int)frame->data[5];
+
+		g_dm4310.motor[idx].pos_rad    = uint_to_float(p_int, DM4310_P_MIN, DM4310_P_MAX, 16);
+		g_dm4310.motor[idx].vel_radps  = uint_to_float(v_int, DM4310_V_MIN, DM4310_V_MAX, 12);
+		g_dm4310.motor[idx].torque_nm  = uint_to_float(t_int, DM4310_T_MIN, DM4310_T_MAX, 12);
+		g_dm4310.motor[idx].motor_state = frame->data[0] >> 4;
+		g_dm4310.motor[idx].mos_temp   = frame->data[6];
+		g_dm4310.motor[idx].coil_temp  = frame->data[7];
+		g_dm4310.motor[idx].last_ms    = k_uptime_get_32();
+		g_dm4310.motor[idx].rx_count++;
+		g_dm4310.motor[idx].online     = 1U;
+
+	next:
+		r++;
+		if (r >= RAW_FRAME_BUF_SIZE) {
+			r = 0;
 		}
 	}
+	raw_buf_read_idx = r;
 }
 
 /**
@@ -360,7 +418,8 @@ static int dm4310_init_bus(const struct device *dev)
 		return ret;
 	}
 
-	ret = can_add_rx_filter_msgq(dev, &dm4310_can_rx_msgq, &filter);
+	/* ISR 回调: CAN 帧到达后立即解析电机位置，零延迟 */
+	ret = can_add_rx_filter(dev, dm4310_can_rx_callback, NULL, &filter);
 	if (ret < 0) {
 		return ret;
 	}
@@ -462,7 +521,6 @@ int dm4310_tick(void)
 	uint32_t tick;
 	uint8_t data[8];
 	int ret = 0;
-
 	drain_rx();
 	refresh_online_mask();
 
@@ -544,7 +602,20 @@ int dm4310_tick(void)
 #endif
 
 	if (g_dm4310.bringup_done) {
-		/* 每 tick 发送全部 4 台电机，控制间隔 10ms（DM4310 要求 <5ms，20ms 间隔会导致抖动） */
+		/* 站立模式增益爬坡: 每 tick 向目标 KP/KD 线性逼近一步 */
+		if (g_dm4310.balance_ramp_remaining > 0U) {
+			g_dm4310.balance_ramp_remaining--;
+			float progress = 1.0f - (float)g_dm4310.balance_ramp_remaining /
+					   (float)g_dm4310.balance_ramp_total;
+			for (int b = 0; b < DM4310_MOTOR_COUNT; b++) {
+				g_dm4310.hold_kp[b] = 0.01f +
+					(g_dm4310.balance_target_kp - 0.01f) * progress;
+				g_dm4310.hold_kd[b] = 0.001f +
+					(g_dm4310.balance_target_kd - 0.001f) * progress;
+			}
+		}
+
+		/* 每 tick 发送全部 4 台电机 */
 		for (int n = 0; n < DM4310_MOTOR_COUNT; n++) {
 			if (g_dm4310.tx_index >= DM4310_MOTOR_COUNT) {
 				g_dm4310.tx_index = 0;
@@ -558,7 +629,7 @@ int dm4310_tick(void)
 			} else if (g_dm4310.hold_updates > 0U) {
 				dm4310_pack_control(g_dm4310.hold_pos_rad[idx],
 						    0.0f, g_dm4310.hold_kp[idx],
-						    g_dm4310.hold_kd[idx], 0.0f, data);
+						    g_dm4310.hold_kd[idx], g_dm4310.feedforward_tau[idx], data);
 			} else {
 				dm4310_pack_control(0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
 						    data);
@@ -711,7 +782,10 @@ int dm4310_hold_positions(const float target[DM4310_MOTOR_COUNT])
 	 */
 	g_dm4310.hold_updates = 1U;
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
-		g_dm4310.hold_pos_rad[i] = target[i];
+		float t = target[i] + g_dm_offset[i];
+		if (t > DM4310_P_MAX) t = DM4310_P_MAX;
+		else if (t < DM4310_P_MIN) t = DM4310_P_MIN;
+		g_dm4310.hold_pos_rad[i] = t;
 	}
 	return 0;
 #endif
@@ -737,7 +811,18 @@ void dm4310_stop_all(void)
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
 		(void)dm4310_send_raw(DM4310_CAN_TX_ID_BASE + (uint16_t)i, data);
 	}
+
+	/*
+	 * 清空所有控制状态，防止后续 tick 以非零 KP/KD 发送 MIT 帧。
+	 * hold_reset 只清 hold_updates 和 hold_pos_rad，这里补清零增益
+	 * 和斜坡，确保 dm4310_tick() 走 DISABLE 分支。
+	 */
 	dm4310_hold_reset();
+	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
+		g_dm4310.hold_kp[i] = 0.0f;
+		g_dm4310.hold_kd[i] = 0.0f;
+	}
+	g_dm4310.balance_ramp_remaining = 0U;
 }
 
 int dm4310_enable_motor(uint8_t motor_id)
@@ -799,4 +884,42 @@ const volatile struct dm4310_motor_status *dm4310_get(uint8_t motor_id)
 		return NULL;
 	}
 	return &g_dm4310.motor[motor_id - 1U];
+}
+
+int dm4310_set_pos_with_offset(uint8_t motor_id, float target_kin)
+{
+	if (motor_id < 1U || motor_id > DM4310_MOTOR_COUNT) {
+		return -EINVAL;
+	}
+	uint8_t idx = motor_id - 1U;
+	float target = target_kin + g_dm_offset[idx];
+
+	/* 最后一层物理限幅，不相信运动学 Agent 的数值 */
+	if (target > DM4310_P_MAX) target = DM4310_P_MAX;
+	else if (target < DM4310_P_MIN) target = DM4310_P_MIN;
+
+	g_dm4310.hold_pos_rad[idx] = target;
+	g_dm4310.hold_updates = 1U;
+	return 0;
+}
+
+int dm4310_balance_enable(uint32_t ramp_ticks)
+{
+	if (!g_dm4310.bringup_done) {
+		return -EAGAIN;
+	}
+
+	/* 以当前位置设为目标，避免使能瞬间位置阶跃 */
+	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
+		g_dm4310.hold_pos_rad[i] = g_dm4310.motor[i].pos_rad;
+	}
+	g_dm4310.hold_updates = 1U;
+
+	/* 设置站立增益目标，dm4310_tick() 内每 tick 自动爬坡 */
+	g_dm4310.balance_target_kp = 80.0f;
+	g_dm4310.balance_target_kd = 1.5f;
+	g_dm4310.balance_ramp_total = ramp_ticks;
+	g_dm4310.balance_ramp_remaining = ramp_ticks;
+
+	return 0;
 }
