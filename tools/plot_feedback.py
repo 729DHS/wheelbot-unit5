@@ -9,7 +9,7 @@ DM4310 反馈数据实时可视化
   # 从保存的 CSV 文件读取
   python plot_feedback.py --file data.csv
 
-CSV 格式: t_ms, motor_id, pos_rad, vel_radps, torque_nm, mos_temp, coil_temp, state
+CSV 格式: t_ms,M1_rad,M2_rad,M3_rad,M4_rad
 
 需要: pip install pyserial matplotlib
 """
@@ -38,16 +38,16 @@ def parse_args():
 
 class DataStore:
     def __init__(self):
-        self.data = defaultdict(list)  # motor_id -> list of (t, pos, vel, tor)
+        self.data = {1: ([], []), 2: ([], []), 3: ([], []), 4: ([], [])}
         self.t0 = None
 
-    def add(self, t_ms, motor_id, pos_rad, vel_radps, torque_nm,
-            mos_temp, coil_temp, state):
+    def add(self, t_ms, m1, m2, m3, m4):
         if self.t0 is None:
             self.t0 = t_ms
         t_rel = (t_ms - self.t0) / 1000.0
-        self.data[motor_id].append((t_rel, pos_rad, vel_radps, torque_nm,
-                                     mos_temp, coil_temp, state))
+        for mid, val in [(1, m1), (2, m2), (3, m3), (4, m4)]:
+            self.data[mid][0].append(t_rel)
+            self.data[mid][1].append(val)
 
 
 def read_serial(port, baud, store, save_file=None):
@@ -61,99 +61,76 @@ def read_serial(port, baud, store, save_file=None):
         if f_out:
             f_out.write(line + "\n")
         if not line or line.startswith("#") or line.startswith("="):
-            print(line)
+            if line:
+                print(line)
             continue
         try:
             parts = line.split(",")
-            if len(parts) < 8:
+            if len(parts) < 5:
                 continue
             t_ms = int(parts[0])
-            motor_id = int(parts[1])
-            pos = float(parts[2])
-            vel = float(parts[3])
-            tor = float(parts[4])
-            mos = int(parts[5])
-            coil = int(parts[6])
-            state = int(parts[7])
-            store.add(t_ms, motor_id, pos, vel, tor, mos, coil, state)
+            m1 = float(parts[1])
+            m2 = float(parts[2])
+            m3 = float(parts[3])
+            m4 = float(parts[4])
+            store.add(t_ms, m1, m2, m3, m4)
         except (ValueError, IndexError):
             continue
 
 
 def read_file(filepath, store):
+    count = 0
     with open(filepath) as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
             parts = line.split(",")
-            if len(parts) < 8:
+            if len(parts) < 5:
                 continue
             t_ms = int(parts[0])
-            motor_id = int(parts[1])
-            pos = float(parts[2])
-            vel = float(parts[3])
-            tor = float(parts[4])
-            mos = int(parts[5])
-            coil = int(parts[6])
-            state = int(parts[7])
-            store.add(t_ms, motor_id, pos, vel, tor, mos, coil, state)
-    print(f"Loaded {sum(len(v) for v in store.data.values())} samples from {filepath}")
+            m1 = float(parts[1])
+            m2 = float(parts[2])
+            m3 = float(parts[3])
+            m4 = float(parts[4])
+            store.add(t_ms, m1, m2, m3, m4)
+            count += 1
+    print(f"Loaded {count} frames from {filepath}")
 
 
 def plot(store, window):
     plt.ion()
-    fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
-    fig.suptitle("DM4310 反馈数据 (M1/M2=CAN1 左腿, M3/M4=CAN2 右腿)")
+    fig, ax = plt.subplots(figsize=(12, 5))
+    fig.suptitle("DM4310 电机角度 (M1/M2=CAN1 左腿, M3/M4=CAN2 右腿)")
 
     colors = {1: "tab:blue", 2: "tab:orange", 3: "tab:green", 4: "tab:red"}
     labels = {1: "M1 左θa", 2: "M2 左θb", 3: "M3 右θa", 4: "M4 右θb"}
 
-    # 初始绘图
-    lines_pos = {}
-    lines_vel = {}
-    lines_tor = {}
-
+    lines = {}
     for mid in [1, 2, 3, 4]:
-        lines_pos[mid], = axes[0].plot([], [], color=colors[mid],
-                                        label=labels[mid], linewidth=0.8)
-        lines_vel[mid], = axes[1].plot([], [], color=colors[mid],
-                                        label=labels[mid], linewidth=0.8)
-        lines_tor[mid], = axes[2].plot([], [], color=colors[mid],
-                                        label=labels[mid], linewidth=0.8)
+        lines[mid], = ax.plot([], [], color=colors[mid],
+                               label=labels[mid], linewidth=0.8)
 
-    for ax in axes:
-        ax.legend(loc="upper right", fontsize=7)
-        ax.grid(True, alpha=0.3)
-
-    axes[0].set_ylabel("位置 (rad)")
-    axes[1].set_ylabel("速度 (rad/s)")
-    axes[2].set_ylabel("力矩 (Nm)")
-    axes[2].set_xlabel("时间 (s)")
+    ax.legend(loc="upper right", fontsize=7)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylabel("角度 (rad)")
+    ax.set_xlabel("时间 (s)")
 
     while True:
-        # 获取最新数据
         all_t = []
         for mid in [1, 2, 3, 4]:
-            if store.data[mid]:
-                ts, ps, vs, trs, _, _, _ = zip(*store.data[mid])
+            ts, vals = store.data[mid]
+            if ts:
+                lines[mid].set_data(ts, vals)
                 all_t.append(max(ts))
-
-                lines_pos[mid].set_data(ts, ps)
-                lines_vel[mid].set_data(ts, vs)
-                lines_tor[mid].set_data(ts, trs)
 
         if all_t:
             t_max = max(all_t)
             t_min = max(0, t_max - window)
-            for ax in axes:
-                ax.set_xlim(t_min, t_max)
+            ax.set_xlim(t_min, t_max)
 
-        # 自动调整 Y 轴
-        for ax in axes:
-            ax.relim()
-            ax.autoscale_view(scalex=False)
-
+        ax.relim()
+        ax.autoscale_view(scalex=False)
         fig.canvas.draw_idle()
         fig.canvas.flush_events()
         plt.pause(0.1)

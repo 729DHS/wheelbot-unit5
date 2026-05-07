@@ -1,45 +1,53 @@
 # Unit5: DM4310 串口调试
 
-> 通过 USART6 串口 (板子丝印 UART1, PG14/PG9) 实时读取 DM4310 电机角度/速度反馈数据。
+> 通过 USART6 串口 Shell 交互控制 + 实时读取 DM4310 电机角度。
 
 ## 定位
 
-**纯反馈读取，不做运动控制。** 上电 bringup 四台 DM4310 电机后，以极小增益保持 MIT 使能状态，每 50ms 通过串口输出角度和速度。
-
-与 Unit4 的区别：
-| | Unit4 | Unit5 |
-|------|-------|-------|
-| 目标 | 左右腿同步控制 | 纯串口反馈读取 |
-| 电机控制 | 左腿主动跟随 | 全部极小增益（≈零力矩）|
-| 串口 | CMSIS-DAP CDC 桥 (不稳定) | USB-TTL (CH340) 直连 |
-| 烧录 | CMSIS-DAP | ST-LINK V2 / CMSIS-DAP |
-| 复杂度 | IK/FK/同步控制 | 最简反馈测试 |
+**电机反馈调试固件。** 上电 bringup 四台电机后，以极小增益保持 MIT 使能，通过 Zephyr Shell 交互控制电机使能/失能/置零，CSV 流输出角度。
 
 ## 硬件
 
 - **MCU**: STM32F407IG (DJI RoboMaster Type-C 板)
-- **电机**: DM-J4310-2EC × 4 (CAN1: 左腿, CAN2: 右腿)
-- **串口**: USB-TTL (CH340) → PG14/PG9 (USART6), 115200 8N1 (板子丝印 UART1)
-- **烧录**: ST-LINK V2 (SWD) 或 CMSIS-DAP
+- **电机**: DM-J4310-2EC × 4 (CAN1: M1+M2 左腿, CAN2: M3+M4 右腿)
+- **调试器**: Horco CMSIS-DAP v0.2 (SWD + 串口二合一)
+- **串口**: 板子丝印 UART1 (3-pin) = USART6 (PG14/PG9), 115200
 
 ## 快速开始
 
 ```bash
-cd /home/huiming/Desktop/Unit5
-./scripts/build.sh                    # 构建
-./scripts/flash_stlink.sh             # 烧录 (ST-LINK)
-./scripts/serial.sh /dev/ttyUSB0      # 打开串口
+./scripts/build.sh && ./scripts/flash_cmsis.sh
+
+# 终端仪表盘
+python3 tools/monitor_angles.py --port /dev/ttyACM0
+
+# 或 Shell 交互
+picocom -b 115200 /dev/ttyACM0
 ```
 
-## 串口输出
+## Shell 命令
 
-CSV 格式，20Hz：
 ```
-t_ms, M1_rad, M1_vel, M2_rad, M2_vel, M3_rad, M3_vel, M4_rad, M4_vel
+motor enable 1          # 使能 M1
+motor disable all       # 失能全部
+motor zero 2            # M2 置零
+motor csv on            # 开始角度流
+motor csv off           # 停止
+motor status            # 查看状态
+motor kp 1 0.05         # 设置 M1 KP
 ```
+
+## 串口输出 (CSV)
+
+```
+t_ms, M1_rad, M2_rad, M3_rad, M4_rad
+```
+
+100Hz, 角度 rad, 上电自动置零。
 
 ## 更多文档
 
-- `AGENT.md` — Agent 引导和完整项目说明
-- `docs/build-and-flash.md` — 构建烧录详细步骤
-- `docs/serial_debug.md` — 串口调试经验参考
+- `AGENT.md` — 完整项目说明
+- `CLAUDE.md` — Claude Code 开发引导
+- `docs/build-and-flash.md` — 构建烧录
+- `docs/STM32_C板用户手册.md` — 硬件参考 (UART 丝印映射)

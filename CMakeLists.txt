@@ -6,4 +6,5 @@ project(unit5_app)
 target_sources(app PRIVATE
 	src/main.c
 	src/dm4310_motor.c
+	src/shell_commands.c
 )

@@ -9,11 +9,13 @@ if [ ! -f build/zephyr/zephyr.elf ]; then
 	exit 1
 fi
 
-# 解除 HID 驱动占用
-HID_PATH="3-1:1.1"
-if [ -e "/sys/bus/usb/drivers/usbhid/${HID_PATH}" ]; then
+# 解除 CMSIS-DAP HID 驱动占用 (动态查找路径)
+HID_PATH=$(find /sys/bus/usb/drivers/usbhid/ -maxdepth 1 -name '*-*:*.*' \
+	-exec sh -c 'grep -l "CMSIS-DAP" "$1/product" 2>/dev/null' _ {} \; \
+	2>/dev/null | head -1 | xargs dirname | xargs basename 2>/dev/null || true)
+if [ -n "${HID_PATH}" ] && [ -e "/sys/bus/usb/drivers/usbhid/${HID_PATH}" ]; then
 	echo "Unbinding HID driver from ${HID_PATH}..."
-	echo "${HID_PATH}" | sudo tee /sys/bus/usb/drivers/usbhid/unbind >/dev/null 2>&1 || true
+	sudo sh -c "echo '${HID_PATH}' > /sys/bus/usb/drivers/usbhid/unbind" 2>/dev/null || true
 fi
 
 sudo openocd -f interface/cmsis-dap.cfg -f target/stm32f4x.cfg \

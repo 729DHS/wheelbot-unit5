@@ -60,6 +60,9 @@ volatile struct dm4310_driver g_dm4310 = {
 	.magic = DM4310_MAGIC,
 };
 
+/* GDB 命令队列，主循环消费 */
+volatile uint8_t g_gdb_cmd[DM4310_MOTOR_COUNT];
+
 static const struct device *can1_dev;
 static const struct device *can2_dev;
 
@@ -287,6 +290,13 @@ static void drain_rx(void)
 	while (k_msgq_get(&dm4310_can_rx_msgq, &frame, K_NO_WAIT) == 0) {
 		struct dm4310_motor_status status = { 0 };
 		uint8_t mid;
+
+		/* M3508/M2006 反馈帧 CAN ID 在 0x200-0x2FF 范围，必须滤掉，
+		 * 否则 data[0] 碰巧落入 1-4 会覆盖 DM4310 电机状态导致跳变。
+		 * DM4310 反馈帧 ID 不受此限制（可能是 0x00, 0x11+, 1-4 等）。 */
+		if (frame.id >= 0x200U && frame.id <= 0x2FFU) {
+			continue;
+		}
 
 		if (frame.data[2] == 0x55U || frame.data[2] == 0x33U || frame.data[2] == 0xAAU) {
 			continue;
@@ -728,6 +738,51 @@ void dm4310_stop_all(void)
 		(void)dm4310_send_raw(DM4310_CAN_TX_ID_BASE + (uint16_t)i, data);
 	}
 	dm4310_hold_reset();
+}
+
+int dm4310_enable_motor(uint8_t motor_id)
+{
+	if (motor_id < 1U || motor_id > DM4310_MOTOR_COUNT) {
+		return -EINVAL;
+	}
+	uint8_t idx = motor_id - 1U;
+	g_dm4310.hold_kp[idx] = 0.01f;
+	g_dm4310.hold_kd[idx] = 0.001f;
+	g_dm4310.hold_pos_rad[idx] = g_dm4310.motor[idx].pos_rad;
+	g_dm4310.hold_updates = 1U;
+
+	uint8_t data[8];
+	dm4310_pack_special(DM4310_CMD_ENABLE_TAIL, data);
+	return dm4310_send_raw(DM4310_CAN_TX_ID_BASE + idx, data);
+}
+
+int dm4310_disable_motor(uint8_t motor_id)
+{
+	if (motor_id < 1U || motor_id > DM4310_MOTOR_COUNT) {
+		return -EINVAL;
+	}
+	uint8_t idx = motor_id - 1U;
+	g_dm4310.hold_kp[idx] = 0.0f;
+	g_dm4310.hold_kd[idx] = 0.0f;
+
+	uint8_t data[8];
+	dm4310_pack_special(DM4310_CMD_DISABLE_TAIL, data);
+	return dm4310_send_raw(DM4310_CAN_TX_ID_BASE + idx, data);
+}
+
+int dm4310_zero_motor(uint8_t motor_id)
+{
+	if (motor_id < 1U || motor_id > DM4310_MOTOR_COUNT) {
+		return -EINVAL;
+	}
+	uint8_t idx = motor_id - 1U;
+	g_dm4310.hold_kp[idx] = 0.01f;
+	g_dm4310.hold_kd[idx] = 0.001f;
+	g_dm4310.hold_pos_rad[idx] = 0.0f;
+
+	uint8_t data[8];
+	dm4310_pack_special(DM4310_CMD_ZERO_TAIL, data);
+	return dm4310_send_raw(DM4310_CAN_TX_ID_BASE + idx, data);
 }
 
 bool dm4310_is_online(uint8_t motor_id)

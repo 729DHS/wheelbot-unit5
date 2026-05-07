@@ -137,6 +137,13 @@ struct dm4310_driver {
 /** @brief DM4310 驱动全局实例 */
 extern volatile struct dm4310_driver g_dm4310;
 
+/* GDB 调试命令队列 (主循环消费，可被 GDB set 触发) */
+#define GDB_CMD_NONE    0
+#define GDB_CMD_ENABLE  1
+#define GDB_CMD_DISABLE 2
+#define GDB_CMD_ZERO    3
+extern volatile uint8_t g_gdb_cmd[DM4310_MOTOR_COUNT];
+
 /**
  * @brief 初始化 DM4310 驱动
  *
@@ -193,6 +200,27 @@ void dm4310_hold_reset(void);
  * @brief 紧急停止所有电机（向四台电机发送 DISABLE 指令）
  */
 void dm4310_stop_all(void);
+
+/**
+ * @brief 使能单台电机（发送 ENABLE 指令 + 设置极小 hold 增益）
+ * @param motor_id 电机 ID (1-4)
+ * @return CAN 发送返回值，0 成功
+ */
+int dm4310_enable_motor(uint8_t motor_id);
+
+/**
+ * @brief 失能单台电机（发送 DISABLE 指令 + 清零 hold 增益）
+ * @param motor_id 电机 ID (1-4)
+ * @return CAN 发送返回值，0 成功
+ */
+int dm4310_disable_motor(uint8_t motor_id);
+
+/**
+ * @brief 设置单台电机零点（发送 ZERO 指令）
+ * @param motor_id 电机 ID (1-4)
+ * @return CAN 发送返回值，0 成功
+ */
+int dm4310_zero_motor(uint8_t motor_id);
 
 /**
  * @brief 查询指定电机是否在线
