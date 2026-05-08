@@ -44,8 +44,46 @@ extern "C" {
 #define LK_L1_MM   (107.4f)   /* |O->P2| */
 #define LK_L2_MM   (128.0f)   /* |P2->P7| */
 
+/* 理论工作空间 (运动学可达) */
 #define LK_H_MIN_MM  (20.6f)  /* abs(L1 - L2) */
 #define LK_H_MAX_MM  (235.4f) /* L1 + L2 */
+
+/* 固定机械偏置: θ = LK_Mx_DIR * motor + OFFSET (机构帧, rad)
+ * cali 位姿: motor=0 时 θa = LK_OFFSET_A, θb = LK_OFFSET_B
+ *
+ * 电机→关节映射: M1=θa_L, M2=θb_L, M3=θb_R, M4=θa_R (M3/M4 对调) */
+#define LK_OFFSET_A  (-2.834415f)   /* -162.4 deg */
+#define LK_OFFSET_B  (-0.174533f)   /*  -10.0 deg */
+
+/* 逐电机编码器方向: M4 反向安装 */
+#define LK_M1_DIR  ( 1.0f)
+#define LK_M2_DIR  ( 1.0f)
+#define LK_M3_DIR  ( 1.0f)
+#define LK_M4_DIR  (-1.0f)
+
+/* 左腿: M1→θa, M2→θb */
+static inline float lk_m1_to_theta_a(float m) { return LK_M1_DIR * m + LK_OFFSET_A; }
+static inline float lk_m2_to_theta_b(float m) { return LK_M2_DIR * m + LK_OFFSET_B; }
+static inline float lk_theta_a_to_m1(float t) { return LK_M1_DIR * (t - LK_OFFSET_A); }
+static inline float lk_theta_b_to_m2(float t) { return LK_M2_DIR * (t - LK_OFFSET_B); }
+
+/* 右腿: M4→θa, M3→θb */
+static inline float lk_m4_to_theta_a(float m) { return LK_M4_DIR * m + LK_OFFSET_A; }
+static inline float lk_m3_to_theta_b(float m) { return LK_M3_DIR * m + LK_OFFSET_B; }
+static inline float lk_theta_a_to_m4(float t) { return LK_M4_DIR * (t - LK_OFFSET_A); }
+static inline float lk_theta_b_to_m3(float t) { return LK_M3_DIR * (t - LK_OFFSET_B); }
+
+/* 关节空间限位 (机构帧, 编码器+offset后, rad) */
+#define LK_THETA_A_MIN  (-3.141593f)  /* -180 deg */
+#define LK_THETA_A_MAX  ( 0.349066f)  /*  +20 deg */
+#define LK_THETA_B_MIN  (-2.094395f)  /* -120 deg */
+#define LK_THETA_B_MAX  ( 0.523599f)  /*  +30 deg */
+
+/* 任务空间软限位 (h/φ 空间) */
+#define LK_H_SOFT_MIN     (45.0f)       /* mm, κ<5 近奇异区 */
+#define LK_H_SOFT_MAX     (235.4f)      /* mm, L1+L2 奇异 */
+#define LK_PHI_SOFT_MIN   (-1.047198f)  /* -60 deg */
+#define LK_PHI_SOFT_MAX   ( 1.047198f)  /* +60 deg */
 
 /* ---------- error codes ---------- */
 typedef enum {
@@ -116,10 +154,10 @@ lk_error_t lk_forward(float theta_a, float theta_b,
  * motor = theta - offset
  */
 static inline float lk_motor_a(float theta_a, const Kinematics_Config *cfg) {
-    return theta_a - cfg->theta_a_offset;
+    return LK_M1_DIR * (theta_a - cfg->theta_a_offset);
 }
 static inline float lk_motor_b(float theta_b, const Kinematics_Config *cfg) {
-    return theta_b - cfg->theta_b_offset;
+    return LK_M2_DIR * (theta_b - cfg->theta_b_offset);
 }
 
 /* ---------- utility ---------- */

@@ -135,7 +135,7 @@ lk_error_t lk_forward(float theta_a, float theta_b,
 
     float sin_a, cos_a, sin_b, cos_b;
     sin_a = sinf(theta_a); cos_a = cosf(theta_a);
-    arm_sin_cos_f32(theta_b, &sin_b, &cos_b);
+    sin_b = sinf(theta_b); cos_b = cosf(theta_b);
 
     float Px = L1 * cos_a + L2 * cos_b;
     float Py = L1 * sin_a + L2 * sin_b;

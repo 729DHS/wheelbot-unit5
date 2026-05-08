@@ -10,4 +10,5 @@ target_sources(app PRIVATE
 	src/linkage_kinematics.c
 	src/leg_control.c
 	src/motor_debug.c
+	src/robot_ctrl.c
 )

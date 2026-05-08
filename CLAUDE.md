@@ -123,7 +123,7 @@ dm4310_motor.h                   # 协议常量、结构体、API 声明
 - **hold_updates 饱和赋值 (=1) 而非自增**，防溢出归零导致电机瞬间失能。见 `dm4310_hold_positions()` (`dm4310_motor.c:698-702`)
 - **Bringup 流程** (staggered 执行，每 tick 一台，~250ms):
   Step 0: 写 MIT 模式寄存器 (StdId 0x7FF, reg 0x0A=1) → Step 1: DISABLE (10 tick) → Step 2: ZERO (10 tick) → Step 3: ENABLE (10 tick)
-- **CAN ID 映射**: 控制帧 ID = `DM4310_CAN_TX_ID_BASE (1) + motor_index`，反馈帧 `data[0] & 0x0F` 取 motor_id (0 无效, 1-4=M1-M4)
+- **CAN ID 映射**: 控制帧 ID = `DM4310_CAN_TX_ID_BASE (5) + motor_index` → M1..M4 = CAN ID 5,6,7,8; 反馈帧 Master ID = `DM4310_MASTER_ID_BASE (0x15) + motor_index` → M1..M4 = 0x15,0x16,0x17,0x18; 反馈帧 `data[0] & 0x0F` 取 motor_id (0 无效, 1-4=M1-M4)
 - **反馈帧布局与 datasheet 不同**: D0[3:0]=ID, D0[7:4]=状态, D1-D2=位置(大端), D3-D4[7:4]=速度, D4[3:0]-D5=力矩, D6=MOS温度, D7=线圈温度
 - **Shell 命令 `motor enable`** 发送 ENABLE + 设置 hold_kp=0.01/kd=0.001；`motor disable` 发送 DISABLE + 清零增益
 

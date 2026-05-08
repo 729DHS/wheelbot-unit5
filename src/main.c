@@ -13,6 +13,7 @@
 
 #include "dm4310_motor.h"
 #include "motor_debug.h"
+#include "robot_ctrl.h"
 
 #include <stdio.h>
 #include <stdbool.h>
@@ -110,11 +111,7 @@ int main(void)
 				bringup_reported = true;
 			}
 
-			float target[DM4310_MOTOR_COUNT];
-			for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
-				target[i] = g_dm4310.motor[i].pos_rad;
-			}
-			dm4310_hold_positions(target);
+			robot_ctrl_tick();
 		}
 
 		dm4310_tick();

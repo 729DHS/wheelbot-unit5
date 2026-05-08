@@ -48,8 +48,11 @@ int leg_move_to_left(float h_mm, float phi_rad)
 	float h_clamped = h_mm;
 
 	if (h_clamped < H_SOFT_LIMIT_MM) {
-		printk("WARNING: h=%.1f < %dmm, clamping to limit (near-singular)\n",
-		       (double)h_mm, (int)H_SOFT_LIMIT_MM);
+		static uint32_t warn_cnt;
+		if ((warn_cnt++ % 500) == 0) {
+			printk("WARNING: h=%.1f < %dmm, clamping (near-singular)\n",
+			       (double)h_mm, (int)H_SOFT_LIMIT_MM);
+		}
 		h_clamped = H_SOFT_LIMIT_MM;
 	}
 
@@ -58,14 +61,18 @@ int leg_move_to_left(float h_mm, float phi_rad)
 		return -(int)e;
 	}
 
+	/* 左腿: M1→θa, M2→θb */
+	float motor_a = lk_theta_a_to_m1(ta);
+	float motor_b = lk_theta_b_to_m2(tb);
+
 	compute_feedforward(h_clamped, phi_rad, ta, tb, 1, 2);
-	dm4310_set_pos_with_offset(1, ta);
-	dm4310_set_pos_with_offset(2, tb);
+	dm4310_set_pos_with_offset(1, motor_a);
+	dm4310_set_pos_with_offset(2, motor_b);
 	telemetry_record_cmd(h_clamped, phi_rad);
 	return 0;
 }
 
-/* 右腿: M3=θa, M4=θb, φ 取反以实现镜像对称 */
+/* 右腿: M4=θa, M3=θb (M3/M4对调), φ 取反以实现镜像对称 */
 int leg_move_to_right(float h_mm, float phi_rad)
 {
 	float ta, tb;
@@ -83,9 +90,12 @@ int leg_move_to_right(float h_mm, float phi_rad)
 		return -(int)e;
 	}
 
+	float motor_a = lk_theta_a_to_m4(ta);
+	float motor_b = lk_theta_b_to_m3(tb);
+
 	compute_feedforward(h_clamped, phi_mirror, ta, tb, 3, 4);
-	dm4310_set_pos_with_offset(3, ta);
-	dm4310_set_pos_with_offset(4, tb);
+	dm4310_set_pos_with_offset(3, motor_b);
+	dm4310_set_pos_with_offset(4, motor_a);
 	return 0;
 }
 

@@ -34,11 +34,12 @@
 /** @brief 零点标定涉及的电机数 */
 #define DM4310_HOME_MOTOR_COUNT 4
 
-/** @brief 控制帧 CAN ID 基址（CAN ID = BASE + motor_index） */
-#define DM4310_CAN_TX_ID_BASE 1U
+/** @brief 控制帧 CAN ID 基址（CAN ID = BASE + motor_index）
+ *  M1..M4 对应 CAN ID 5..8 (避开 3508 的 1..4) */
+#define DM4310_CAN_TX_ID_BASE 5U
 
-/** @brief 主控 CAN ID 基址 */
-#define DM4310_MASTER_ID_BASE 0x11U
+/** @brief 反馈帧 Master ID 基址（建议 Master ID = CAN ID + 0x10, M1..M4 = 0x15..0x18） */
+#define DM4310_MASTER_ID_BASE 0x15U
 
 /** @brief CAN1 上的电机数量（左腿） */
 #define DM4310_MOTORS_ON_CAN1  2U
@@ -101,6 +102,7 @@ struct dm4310_motor_status {
 	float pos_rad;          /**< 当前位置（弧度） */
 	float vel_radps;        /**< 当前速度（弧度/秒） */
 	float torque_nm;        /**< 当前力矩（Nm） */
+	uint8_t raw_frame[8];   /**< 最近一帧原始 CAN 数据 (诊断用) */
 };
 
 /**

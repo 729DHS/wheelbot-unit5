@@ -85,6 +85,28 @@ static inline const struct device *motor_idx_to_can(uint8_t motor_idx)
 	return (motor_idx < DM4310_MOTORS_ON_CAN1) ? can1_dev : can2_dev;
 }
 
+static inline uint8_t motor_idx_to_can_id(uint8_t motor_idx)
+{
+	return (uint8_t)(DM4310_CAN_TX_ID_BASE + motor_idx);
+}
+
+static bool dm4310_feedback_id_to_idx(uint16_t std_id, uint8_t *idx)
+{
+	if (std_id >= DM4310_MASTER_ID_BASE &&
+	    std_id < (DM4310_MASTER_ID_BASE + DM4310_MOTOR_COUNT)) {
+		*idx = (uint8_t)(std_id - DM4310_MASTER_ID_BASE);
+		return true;
+	}
+
+	if (std_id >= DM4310_CAN_TX_ID_BASE &&
+	    std_id < (DM4310_CAN_TX_ID_BASE + DM4310_MOTOR_COUNT)) {
+		*idx = (uint8_t)(std_id - DM4310_CAN_TX_ID_BASE);
+		return true;
+	}
+
+	return false;
+}
+
 /**
  * @brief CAN RX 中断回调 — 仅拷贝原始帧到 ring buffer
  *
@@ -114,13 +136,13 @@ static void put_le_u32(uint8_t data[4], uint32_t value)
 	data[3] = (uint8_t)(value >> 24);
 }
 
-static int dm4310_write_u32_register(uint8_t motor_id, uint8_t reg, uint32_t value)
+static int dm4310_write_u32_register(uint8_t motor_idx, uint8_t reg, uint32_t value)
 {
 	uint8_t data[8];
 	struct can_frame frame;
 	int ret;
 
-	data[0] = motor_id;
+	data[0] = motor_idx_to_can_id(motor_idx);
 	data[1] = 0U;
 	data[2] = 0x55U;
 	data[3] = reg;
@@ -131,7 +153,7 @@ static int dm4310_write_u32_register(uint8_t motor_id, uint8_t reg, uint32_t val
 	frame.dlc = 8;
 	memcpy(frame.data, data, 8);
 
-	ret = can_send(motor_idx_to_can(motor_id - 1U), &frame, K_MSEC(2), NULL, NULL);
+	ret = can_send(motor_idx_to_can(motor_idx), &frame, K_MSEC(2), NULL, NULL);
 	g_dm4310.last_send_ret = ret;
 
 	return ret;
@@ -326,13 +348,11 @@ static void drain_rx(void)
 	uint8_t r = raw_buf_read_idx;
 	uint8_t w = raw_buf_write_idx;
 	struct can_frame *frame;
-	uint8_t motor_id;
 	int p_int, v_int, t_int;
 	uint8_t idx;
 
 	while (r != w) {
 		frame = &raw_frame_buf[r].frame;
-
 
 		/* 过滤寄存器读写响应帧 (StdId 0x7FF) */
 		if (frame->data[2] == 0x55U || frame->data[2] == 0x33U ||
@@ -340,12 +360,10 @@ static void drain_rx(void)
 			goto next;
 		}
 
-		motor_id = frame->data[0] & 0x0FU;
-		if (motor_id == 0U || motor_id > DM4310_MOTOR_COUNT) {
+
+		if (!dm4310_feedback_id_to_idx(frame->id, &idx)) {
 			goto next;
 		}
-
-		idx = motor_id - 1U;
 
 		/* 位操作 + 浮点转换 (主循环上下文, 非 ISR) */
 		p_int = ((int)frame->data[1] << 8) | (int)frame->data[2];
@@ -361,6 +379,9 @@ static void drain_rx(void)
 		g_dm4310.motor[idx].last_ms    = k_uptime_get_32();
 		g_dm4310.motor[idx].rx_count++;
 		g_dm4310.motor[idx].online     = 1U;
+
+		/* 保存原始 CAN 帧 (诊断用) */
+		memcpy((void *)g_dm4310.motor[idx].raw_frame, frame->data, 8);
 
 	next:
 		r++;
@@ -566,7 +587,7 @@ int dm4310_tick(void)
 		idx = g_dm4310.tx_index;
 		if (idx >= DM4310_HOME_START_IDX && idx < DM4310_HOME_MOTOR_COUNT) {
 			if (g_dm4310.can1_home_enable_ticks > DM4310_CAN1_HOME_ENABLE_TICKS) {
-				ret = dm4310_write_u32_register(idx + 1U, DM4310_REG_CTRL_MODE,
+				ret = dm4310_write_u32_register(idx, DM4310_REG_CTRL_MODE,
 								DM4310_CTRL_MODE_MIT);
 				g_dm4310.can1_home_enable_ticks--;
 				g_dm4310.tx_index++;
@@ -652,7 +673,7 @@ int dm4310_tick(void)
 
 		/* Step 0: write MIT mode register via StdId 0x7FF */
 		if (step == 0U) {
-			ret = dm4310_write_u32_register((uint8_t)(i + 1U),
+			ret = dm4310_write_u32_register((uint8_t)i,
 				DM4310_REG_CTRL_MODE, DM4310_CTRL_MODE_MIT);
 			g_dm4310.bringup_step[i] = 1U;
 			g_dm4310.bringup_tick[i] = 0U;
