@@ -36,4 +36,9 @@ int leg_move_to_right(float h_mm, float phi_rad);
  */
 int leg_move_all(float h_mm, float phi_rad);
 
+void leg_init_prev_left(float ta, float tb);
+void leg_init_prev_right(float ta, float tb);
+
+void leg_diag(float h_mm, float phi_rad);
+
 #endif /* LEG_CONTROL_H_ */

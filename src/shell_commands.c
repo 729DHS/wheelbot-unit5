@@ -1,3 +1,5 @@
+	/* robot cali — 一键标定: re-ZERO 电机 + 记录位姿
+
 /**
  * @file shell_commands.c
  * @brief 串口 Shell 电机调试命令
@@ -363,33 +365,58 @@ static int cmd_robot_cali(const struct shell *sh, size_t argc, char **argv)
 		raw_m[i] = g_dm4310.motor[i].pos_rad;
 	}
 
-	/* 2. 控制目标使用 target + g_dm_offset, 显示/FK 使用 raw - g_dm_offset */
+	/* 2. Re-ZERO 四台电机 (当前位置 → encoder=0) */
+	for (uint8_t id = 1; id <= DM4310_MOTOR_COUNT; id++) {
+		int ret = dm4310_zero_motor(id);
+		shell_print(sh, "M%d ZERO  ret=%d", id, ret);
+	}
+
+	/* 3. 清零 g_dm_offset + 同步 hold_pos_rad */
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
-		g_dm_offset[i] = raw_m[i];
-		/* 同步 hold_pos_rad, 防止标定后 pos_err 跳变触发堵转保护 */
-		g_dm4310.hold_pos_rad[i] = g_dm4310.motor[i].pos_rad;
+		g_dm_offset[i] = 0.0f;
+		g_dm4310.hold_pos_rad[i] = 0.0f; /* ZERO后encoder归零 */
 	}
 	g_dm4310.hold_updates = 1U;
 
-	/* 3. 标定后 calibrated motor=0, 用默认机构偏置计算当前任务空间 */
-	float ta_L_raw = lk_m1_to_theta_a(0.0f);
-	float tb_L_raw = lk_m2_to_theta_b(0.0f);
+	/*
+	 * 4. FK from post-ZERO (motor=0 → θa=OFFSET_A, θb=OFFSET_B)。
+	 *    轨迹起点必须和 robot raw 的 FK 一致，不用 pre-ZERO 的 raw_m。
+	 */
+	float ta0 = LK_OFFSET_A;
+	float tb0 = LK_OFFSET_B;
 	float h0, phi0;
-	if (lk_forward(ta_L_raw, tb_L_raw, NULL, &h0, &phi0) == LK_OK) {
-		g_robot.traj_h_current = h0;
-		g_robot.traj_phi_current = phi0 * 180.0f / M_PI;
-	} else {
-		g_robot.traj_h_current = 150.0f;
-		g_robot.traj_phi_current = 0.0f;
-	}
+	lk_forward(ta0, tb0, NULL, &h0, &phi0);
+	g_robot.traj_h_current = h0;
+	g_robot.traj_phi_current = phi0 * 180.0f / M_PI;
+
+	/* 初始化 IK 分支追踪 (机构帧 θa/θb) */
+	leg_init_prev_left(ta0, tb0);
+	leg_init_prev_right(ta0, tb0);
 
 	shell_print(sh, "Software calibration done. No DM4310 ZERO command sent.");
 	shell_print(sh, "Raw encoder zero offset: M1=%.4f M2=%.4f M3=%.4f M4=%.4f rad",
 		    (double)raw_m[0], (double)raw_m[1],
 		    (double)raw_m[2], (double)raw_m[3]);
-	shell_print(sh, "Task space (calibrated motor=0): h0=%.1f mm phi0=%.1f deg",
-		    (double)h0, (double)phi0);
+	shell_print(sh, "Task space (FK from ZERO): h0=%.1f mm phi0=%.1f deg",
+		    (double)h0, (double)(phi0 * 180.0 / M_PI));
 	shell_print(sh, "Use 'robot raw' to verify angles/h/phi.");
+	return 0;
+}
+
+/* robot diag <h_mm> <phi_deg> */
+static int cmd_robot_diag(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc < 3) {
+		shell_print(sh, "Usage: robot diag <h_mm> <phi_deg>");
+		return -EINVAL;
+	}
+	float h_mm = (float)atof(argv[1]);
+	float phi_deg = (float)atof(argv[2]);
+	float phi_rad = phi_deg * 3.1415926535f / 180.0f;
+	shell_print(sh, "Running diag h=%.1f phi=%.1f deg -> see serial",
+		    (double)h_mm, (double)phi_deg);
+	leg_diag(h_mm, phi_rad);
+	shell_print(sh, "Diag done.");
 	return 0;
 }
 
@@ -398,8 +425,8 @@ static int cmd_robot_move(const struct shell *sh, size_t argc, char **argv)
 {
 	if (argc < 3) {
 		shell_print(sh, "Usage: robot move <h_mm> <phi_deg>");
-		shell_print(sh, "  h_mm:   足端高度 (允许 120-200 mm, 限速 10mm/s)");
-		shell_print(sh, "  phi_deg: 摆动角 (允许 ±8°, 限速 2deg/s)");
+		shell_print(sh, "  h_mm:   足端高度 (允许 45.0-100.0 mm, 限速 10mm/s)");
+		shell_print(sh, "  phi_deg: 摆动角 (允许 ±30°, 限速 2deg/s)");
 		return -EINVAL;
 	}
 
@@ -417,13 +444,13 @@ static int cmd_robot_move(const struct shell *sh, size_t argc, char **argv)
 	float h_mm = (float)atof(argv[1]);
 	float phi_deg = (float)atof(argv[2]);
 
-	if (h_mm < 120.0f || h_mm > 200.0f) {
-		shell_print(sh, "REJECTED: h=%.1f mm out of range (120-200 mm)",
+	if (h_mm < 45.0f || h_mm > 100.0f) {
+		shell_print(sh, "REJECTED: h=%.1f mm out of range (45.0-100.0 mm)",
 			    (double)h_mm);
 		return -EINVAL;
 	}
-	if (phi_deg < -8.0f || phi_deg > 8.0f) {
-		shell_print(sh, "REJECTED: phi=%.1f deg out of range (±8 deg)",
+	if (phi_deg < -30.0f || phi_deg > 30.0f) {
+		shell_print(sh, "REJECTED: phi=%.1f deg out of range (±30 deg)",
 			    (double)phi_deg);
 		return -EINVAL;
 	}
@@ -445,7 +472,7 @@ static int cmd_robot_move(const struct shell *sh, size_t argc, char **argv)
 static int cmd_robot_jog_h(const struct shell *sh, size_t argc, char **argv)
 {
 	if (argc < 2) {
-		shell_print(sh, "Usage: robot jog h <delta_mm> (|delta|≤10mm)");
+		shell_print(sh, "Usage: robot jog h <delta_mm> (|delta|≤1mm)");
 		return -EINVAL;
 	}
 
@@ -455,14 +482,14 @@ static int cmd_robot_jog_h(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	float delta = (float)atof(argv[1]);
-	if (fabsf(delta) > 5.0f) {
-		shell_print(sh, "REJECTED: |delta|=%.1f mm > 5mm", (double)fabsf(delta));
+	if (fabsf(delta) > 1.0f) {
+		shell_print(sh, "REJECTED: |delta|=%.1f mm > 1mm", (double)fabsf(delta));
 		return -EINVAL;
 	}
 
 	float new_h = g_robot.traj_h_current + delta;
-	if (new_h < 120.0f || new_h > 200.0f) {
-		shell_print(sh, "REJECTED: target h=%.1f mm out of range (120-200)",
+	if (new_h < 45.0f || new_h > 100.0f) {
+		shell_print(sh, "REJECTED: target h=%.1f mm out of range (45.0-100.0)",
 			    (double)new_h);
 		return -EINVAL;
 	}
@@ -481,7 +508,7 @@ static int cmd_robot_jog_h(const struct shell *sh, size_t argc, char **argv)
 static int cmd_robot_jog_phi(const struct shell *sh, size_t argc, char **argv)
 {
 	if (argc < 2) {
-		shell_print(sh, "Usage: robot jog phi <delta_deg> (|delta|≤2deg)");
+		shell_print(sh, "Usage: robot jog phi <delta_deg> (|delta|≤0.2deg)");
 		return -EINVAL;
 	}
 
@@ -491,14 +518,14 @@ static int cmd_robot_jog_phi(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	float delta = (float)atof(argv[1]);
-	if (fabsf(delta) > 1.0f) {
-		shell_print(sh, "REJECTED: |delta|=%.1f deg > 1deg", (double)fabsf(delta));
+	if (fabsf(delta) > 0.2f) {
+		shell_print(sh, "REJECTED: |delta|=%.1f deg > 0.2deg", (double)fabsf(delta));
 		return -EINVAL;
 	}
 
 	float new_phi = g_robot.traj_phi_current + delta;
-	if (new_phi < -8.0f || new_phi > 8.0f) {
-		shell_print(sh, "REJECTED: target phi=%.1f deg out of range (±8)",
+	if (new_phi < -30.0f || new_phi > 30.0f) {
+		shell_print(sh, "REJECTED: target phi=%.1f deg out of range (±30)",
 			    (double)new_phi);
 		return -EINVAL;
 	}
@@ -781,13 +808,14 @@ SHELL_STATIC_SUBCMD_SET_CREATE(balance_cmds,
 SHELL_CMD_REGISTER(balance, &balance_cmds, "Balance control commands", NULL);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(jog_cmds,
-	SHELL_CMD_ARG(h,   NULL, "robot jog h <delta_mm> (|delta|≤10mm)", cmd_robot_jog_h,   2, 0),
-	SHELL_CMD_ARG(phi, NULL, "robot jog phi <delta_deg> (|delta|≤2deg)", cmd_robot_jog_phi, 2, 0),
+	SHELL_CMD_ARG(h,   NULL, "robot jog h <delta_mm> (|delta|≤1mm)", cmd_robot_jog_h,   2, 0),
+	SHELL_CMD_ARG(phi, NULL, "robot jog phi <delta_deg> (|delta|≤0.2deg)", cmd_robot_jog_phi, 2, 0),
 	SHELL_SUBCMD_SET_END
 );
 
 SHELL_STATIC_SUBCMD_SET_CREATE(robot_cmds,
-	SHELL_CMD_ARG(cali, NULL, "robot cali — set software zero, does not write motor zero", cmd_robot_cali, 1, 0),
+	SHELL_CMD_ARG(diag, NULL, "robot diag <h_mm> <phi_deg>", cmd_robot_diag, 3, 0),
+	SHELL_CMD_ARG(cali, NULL, "robot cali — save current pose as zero + track h0/phi0", cmd_robot_cali, 1, 0),
 	SHELL_CMD_ARG(move, NULL, "robot move <h_mm> <phi_deg> (traj limited)", cmd_robot_move, 3, 0),
 	SHELL_CMD(jog, &jog_cmds, "robot jog — small incremental move", NULL),
 	SHELL_CMD_ARG(stop, NULL, "robot stop — back to drag mode + cancel traj", cmd_robot_stop, 1, 0),

@@ -3,12 +3,13 @@
  * @brief 轨迹插值 + jog 微调 + 堵转保护
  *
  * 500Hz 控制循环内执行:
- *   1. 轨迹插值 (h ≤10mm/s, phi ≤2deg/s)
+ *   1. 轨迹插值 (h ≤2mm/s, phi ≤0.5deg/s)
  *   2. 调 leg_move_all() 下发目标
  *   3. 堵转/碰撞检测 (100ms debounce → 自动 stop)
  */
 #include "robot_ctrl.h"
 #include "leg_control.h"
+#include "linkage_kinematics.h"
 #include "dm4310_motor.h"
 
 #include <math.h>
@@ -38,6 +39,10 @@ static void start_trajectory(float h_from, float phi_from,
 	g_robot.traj_phi_step_per_tick = (dphi > 0 ? 1.0f : -1.0f) * max_phi_step;
 
 	g_robot.traj_active = true;
+
+	printk("TRAJ START: h %.1f→%.1f (step=%.3f) phi %.1f→%.1f (step=%.3f)\n",
+	       (double)h_from, (double)h_to, (double)g_robot.traj_h_step_per_tick,
+	       (double)phi_from, (double)phi_to, (double)g_robot.traj_phi_step_per_tick);
 }
 
 /* 一步插值: 向目标逼近, 到达后清零 traj_active */
@@ -65,10 +70,20 @@ static void trajectory_step(void)
 	g_robot.traj_phi_current = phi;
 
 	/* 下发当前插值位置 */
-	leg_move_all(h, phi * 3.1415926535f / 180.0f);
+	int ret = leg_move_all(h, phi * 3.1415926535f / 180.0f);
+
+	if (ret != 0) {
+		printk("TRAJ leg_move_all FAIL: h=%.1f phi=%.1f ret=%d -> STOP\n",
+		       (double)h, (double)phi, ret);
+		robot_ctrl_stop();
+		return;
+	}
 
 	if (h_done && phi_done) {
 		g_robot.traj_active = false;
+		printk("TRAJ DONE: h=%.1f phi=%.1f\n",
+		       (double)g_robot.traj_h_target,
+		       (double)g_robot.traj_phi_target);
 	}
 }
 
@@ -111,6 +126,19 @@ static void stall_check(void)
 		g_robot.stall_counter++;
 		if (g_robot.stall_counter >= STALL_DEBOUNCE_TICKS) {
 			printk("!!! STALL PROTECTION: auto stop !!!\n");
+			printk("  M1: err=%.3f tq=%.3f | M2: err=%.3f tq=%.3f\n",
+			       (double)fabsf(g_dm4310.hold_pos_rad[0] - g_dm4310.motor[0].pos_rad),
+			       (double)g_dm4310.motor[0].torque_nm,
+			       (double)fabsf(g_dm4310.hold_pos_rad[1] - g_dm4310.motor[1].pos_rad),
+			       (double)g_dm4310.motor[1].torque_nm);
+			printk("  M3: err=%.3f tq=%.3f | M4: err=%.3f tq=%.3f\n",
+			       (double)fabsf(g_dm4310.hold_pos_rad[2] - g_dm4310.motor[2].pos_rad),
+			       (double)g_dm4310.motor[2].torque_nm,
+			       (double)fabsf(g_dm4310.hold_pos_rad[3] - g_dm4310.motor[3].pos_rad),
+			       (double)g_dm4310.motor[3].torque_nm);
+			printk("  h_tgt=%.1f h_cur=%.1f phi_tgt=%.1f phi_cur=%.1f\n",
+			       (double)g_robot.traj_h_target, (double)g_robot.traj_h_current,
+			       (double)g_robot.traj_phi_target, (double)g_robot.traj_phi_current);
 			robot_ctrl_stop();
 			g_robot.stall_triggered = true;
 		}
@@ -159,18 +187,16 @@ int robot_ctrl_jog_h(float delta_mm)
 {
 	float new_target = g_robot.traj_h_current + delta_mm;
 
-	if (new_target < 120.0f || new_target > 200.0f) {
+	if (new_target < 45.0f || new_target > 100.0f) {
 		return -1;
 	}
 
 	if (g_robot.traj_active) {
-		/* 更新目标, 轨迹继续 */
 		g_robot.traj_h_target = new_target;
 		float dh = new_target - g_robot.traj_h_current;
 		float max_step = TRAJ_H_SPEED_MM_PER_S * TICK_S;
 		g_robot.traj_h_step_per_tick = (dh > 0 ? 1.0f : -1.0f) * max_step;
 	} else {
-		/* 从当前位置启动新轨迹 */
 		start_trajectory(g_robot.traj_h_current, g_robot.traj_phi_current,
 				 new_target, g_robot.traj_phi_current);
 		for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
@@ -187,7 +213,7 @@ int robot_ctrl_jog_phi(float delta_deg)
 {
 	float new_target = g_robot.traj_phi_current + delta_deg;
 
-	if (new_target < -8.0f || new_target > 8.0f) {
+	if (new_target < -30.0f || new_target > 30.0f) {
 		return -1;
 	}
 
