@@ -1,5 +1,6 @@
 board:
   name: robomaster_c
+  full_name: RoboMaster Type C Board
   vendor: dji
   socs:
     - name: stm32f407xx

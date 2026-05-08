@@ -41,10 +41,15 @@ struct limit_scan_s {
 };
 static struct limit_scan_s g_scan;
 
+static float dm4310_motor_calibrated_pos(int idx)
+{
+	return g_dm4310.motor[idx].pos_rad - g_dm_offset[idx];
+}
+
 static void scan_update(struct limit_scan_s *s)
 {
 	float m[4], ta[2], tb[2], h[2], phi[2];
-	for (int i = 0; i < 4; i++) m[i] = g_dm4310.motor[i].pos_rad;
+	for (int i = 0; i < 4; i++) m[i] = dm4310_motor_calibrated_pos(i);
 	ta[0] = lk_m1_to_theta_a(m[0]); tb[0] = lk_m2_to_theta_b(m[1]);
 	ta[1] = lk_m4_to_theta_a(m[3]); tb[1] = lk_m3_to_theta_b(m[2]);
 	lk_forward(ta[0], tb[0], NULL, &h[0], &phi[0]);
@@ -82,7 +87,7 @@ static void scan_print(const struct shell *sh, struct limit_scan_s *s, uint32_t 
 {
 	float m[4], ta[2], tb[2], h[2], phi[2], tq[4];
 	for (int i = 0; i < 4; i++) {
-		m[i]  = g_dm4310.motor[i].pos_rad;
+		m[i]  = dm4310_motor_calibrated_pos(i);
 		tq[i] = g_dm4310.motor[i].torque_nm;
 	}
 	ta[0] = lk_m1_to_theta_a(m[0]); tb[0] = lk_m2_to_theta_b(m[1]);
@@ -344,37 +349,31 @@ static int cmd_motor_torque(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
-/* robot cali — 一键标定: re-ZERO 电机 + 记录位姿
+/* robot cali — 一键软件标定: 记录当前原始编码器位置为固件零点
  * 标定位姿: θa = LK_OFFSET_A = -162.4°, θb = LK_OFFSET_B = -10.0°
- * ZERO 后 motor=0, 公式 θ = motor + LK_OFFSET 自动成立 */
+ * 不向电机发送 ZERO(0xFE), 避免覆盖 DM4310 内部绝对零点。*/
 static int cmd_robot_cali(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 
-	/* 1. 获取 cali 前的原始电机角 (用于 FK 反算) */
+	/* 1. 获取当前原始电机角, 作为固件软件零点 */
 	float raw_m[4];
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
 		raw_m[i] = g_dm4310.motor[i].pos_rad;
 	}
 
-	/* 2. Re-ZERO 四台电机 (当前位置 → encoder=0) */
-	for (uint8_t id = 1; id <= DM4310_MOTOR_COUNT; id++) {
-		int ret = dm4310_zero_motor(id);
-		shell_print(sh, "M%d ZERO  ret=%d", id, ret);
-	}
-
-	/* 3. 清零 g_dm_offset (ZERO 后 θ = motor + LK_OFFSET 已正确, 无需偏置) */
+	/* 2. 控制目标使用 target + g_dm_offset, 显示/FK 使用 raw - g_dm_offset */
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
-		g_dm_offset[i] = 0.0f;
-		/* 同步 hold_pos_rad, 防止 ZERO 后 pos_err 跳变触发堵转保护 */
+		g_dm_offset[i] = raw_m[i];
+		/* 同步 hold_pos_rad, 防止标定后 pos_err 跳变触发堵转保护 */
 		g_dm4310.hold_pos_rad[i] = g_dm4310.motor[i].pos_rad;
 	}
 	g_dm4310.hold_updates = 1U;
 
-	/* 4. FK 反算: 使用 ZERO 前的原始角度 (机构帧) */
-	float ta_L_raw = lk_m1_to_theta_a(raw_m[0]);
-	float tb_L_raw = lk_m2_to_theta_b(raw_m[1]);
+	/* 3. 标定后 calibrated motor=0, 用默认机构偏置计算当前任务空间 */
+	float ta_L_raw = lk_m1_to_theta_a(0.0f);
+	float tb_L_raw = lk_m2_to_theta_b(0.0f);
 	float h0, phi0;
 	if (lk_forward(ta_L_raw, tb_L_raw, NULL, &h0, &phi0) == LK_OK) {
 		g_robot.traj_h_current = h0;
@@ -384,11 +383,11 @@ static int cmd_robot_cali(const struct shell *sh, size_t argc, char **argv)
 		g_robot.traj_phi_current = 0.0f;
 	}
 
-	shell_print(sh, "Calibration done. ZERO→0 at current pose.");
-	shell_print(sh, "Motor raw (before ZERO): M1=%.4f M2=%.4f M3=%.4f M4=%.4f rad",
+	shell_print(sh, "Software calibration done. No DM4310 ZERO command sent.");
+	shell_print(sh, "Raw encoder zero offset: M1=%.4f M2=%.4f M3=%.4f M4=%.4f rad",
 		    (double)raw_m[0], (double)raw_m[1],
 		    (double)raw_m[2], (double)raw_m[3]);
-	shell_print(sh, "Task space (FK from raw): h0=%.1f mm phi0=%.1f deg",
+	shell_print(sh, "Task space (calibrated motor=0): h0=%.1f mm phi0=%.1f deg",
 		    (double)h0, (double)phi0);
 	shell_print(sh, "Use 'robot raw' to verify angles/h/phi.");
 	return 0;
@@ -534,7 +533,7 @@ static int cmd_robot_raw(const struct shell *sh, size_t argc, char **argv)
 
 	float m[4];
 	for (int i = 0; i < 4; i++) {
-		m[i] = (double)g_dm4310.motor[i].pos_rad;
+		m[i] = dm4310_motor_calibrated_pos(i);
 	}
 
 	float ta_L = lk_m1_to_theta_a(m[0]);
@@ -546,8 +545,13 @@ static int cmd_robot_raw(const struct shell *sh, size_t argc, char **argv)
 	lk_forward(ta_L, tb_L, NULL, &h_L, &phi_L);
 	lk_forward(ta_R, tb_R, NULL, &h_R, &phi_R);
 
-	shell_print(sh, "M1_rad=%.4f M2_rad=%.4f M3_rad=%.4f M4_rad=%.4f",
+	shell_print(sh, "M1_cal=%.4f M2_cal=%.4f M3_cal=%.4f M4_cal=%.4f rad",
 		    (double)m[0], (double)m[1], (double)m[2], (double)m[3]);
+	shell_print(sh, "M1_raw=%.4f M2_raw=%.4f M3_raw=%.4f M4_raw=%.4f rad",
+		    (double)g_dm4310.motor[0].pos_rad,
+		    (double)g_dm4310.motor[1].pos_rad,
+		    (double)g_dm4310.motor[2].pos_rad,
+		    (double)g_dm4310.motor[3].pos_rad);
 	shell_print(sh, "theta_a_L=%.2f theta_b_L=%.2f theta_a_R=%.2f theta_b_R=%.2f deg",
 		    (double)(ta_L * 180.0 / M_PI),
 		    (double)(tb_L * 180.0 / M_PI),
@@ -570,10 +574,10 @@ static int cmd_robot_viz(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 
-	float ta_L = lk_m1_to_theta_a(g_dm4310.motor[0].pos_rad);
-	float tb_L = lk_m2_to_theta_b(g_dm4310.motor[1].pos_rad);
-	float ta_R = lk_m4_to_theta_a(g_dm4310.motor[3].pos_rad);
-	float tb_R = lk_m3_to_theta_b(g_dm4310.motor[2].pos_rad);
+	float ta_L = lk_m1_to_theta_a(dm4310_motor_calibrated_pos(0));
+	float tb_L = lk_m2_to_theta_b(dm4310_motor_calibrated_pos(1));
+	float ta_R = lk_m4_to_theta_a(dm4310_motor_calibrated_pos(3));
+	float tb_R = lk_m3_to_theta_b(dm4310_motor_calibrated_pos(2));
 
 	float h_L, phi_L, h_R, phi_R;
 	if (lk_forward(ta_L, tb_L, NULL, &h_L, &phi_L) != LK_OK) { h_L = 0; phi_L = 0; }
@@ -783,7 +787,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(jog_cmds,
 );
 
 SHELL_STATIC_SUBCMD_SET_CREATE(robot_cmds,
-	SHELL_CMD_ARG(cali, NULL, "robot cali — save current pose as zero + track h0/phi0", cmd_robot_cali, 1, 0),
+	SHELL_CMD_ARG(cali, NULL, "robot cali — set software zero, does not write motor zero", cmd_robot_cali, 1, 0),
 	SHELL_CMD_ARG(move, NULL, "robot move <h_mm> <phi_deg> (traj limited)", cmd_robot_move, 3, 0),
 	SHELL_CMD(jog, &jog_cmds, "robot jog — small incremental move", NULL),
 	SHELL_CMD_ARG(stop, NULL, "robot stop — back to drag mode + cancel traj", cmd_robot_stop, 1, 0),

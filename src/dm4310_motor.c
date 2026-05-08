@@ -9,9 +9,8 @@
  * Bringup 流程（每台电机 staggered 执行，每 tick 只处理一台）：
  * Step 0: 写 MIT 模式寄存器（StdId 0x7FF）
  * Step 1: 发送 DISABLE（10 tick）
- * Step 2: 发送 ZERO（10 tick）
- * Step 3: 发送 ENABLE（10 tick）
- * 总计约 124 tick × 2ms = ~250ms
+ * Step 2: 发送 ENABLE（10 tick）
+ * 总计约 84 tick × 2ms = ~170ms
  *
  * MIT 控制律：
  *   torque = KP × (p_des - p_act) + KD × (v_des - v_act) + T_ff
@@ -662,7 +661,11 @@ int dm4310_tick(void)
 		return ret;
 	}
 
-	/* Bringup: MIT register write -> DISABLE -> ZERO -> ENABLE */
+	/* Bringup: MIT register write -> DISABLE -> ENABLE.
+	 * Do not send ZERO here: 0xFE persists the current output shaft
+	 * position as zero inside the DM4310 and destroys absolute position
+	 * continuity across power cycles.
+	 */
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
 		step = g_dm4310.bringup_step[i];
 		tick = g_dm4310.bringup_tick[i];
@@ -683,8 +686,6 @@ int dm4310_tick(void)
 
 		if (step == 1U) {
 			dm4310_pack_special(DM4310_CMD_DISABLE_TAIL, data);
-		} else if (step == 2U) {
-			dm4310_pack_special(DM4310_CMD_ZERO_TAIL, data);
 		} else {
 			dm4310_pack_special(DM4310_CMD_ENABLE_TAIL, data);
 		}
@@ -693,7 +694,7 @@ int dm4310_tick(void)
 		tick++;
 		if (tick >= DM4310_BRINGUP_TICKS) {
 			g_dm4310.bringup_step[i] = step + 1U;
-			if (g_dm4310.bringup_step[i] >= 4U) {
+			if (g_dm4310.bringup_step[i] >= 3U) {
 				continue;
 			}
 			g_dm4310.bringup_tick[i] = 0U;
@@ -710,7 +711,7 @@ int dm4310_tick(void)
 	 */
 	uint8_t all_done = 1U;
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
-		if (g_dm4310.bringup_step[i] < 4U) {
+		if (g_dm4310.bringup_step[i] < 3U) {
 			all_done = 0U;
 			break;
 		}
