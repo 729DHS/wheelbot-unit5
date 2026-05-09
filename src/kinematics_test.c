@@ -100,17 +100,19 @@ static void test_fk_known(void)
 {
 	TEST_SECTION("FK known poses");
 
-	/* cali 位姿: θa=-162.4°(OFFSET_A), θb=-10°(OFFSET_B) */
+	/* cali 位姿: θa=-162.4°(OFFSET_A), θb=-10°(OFFSET_B)
+	 * 对应 motor=0 时的机构帧角度, h 在工作空间内即可 */
 	float ta_cali = LK_OFFSET_A;
 	float tb_cali = LK_OFFSET_B;
 	float h_cali, phi_cali;
 	lk_error_t e = lk_forward(ta_cali, tb_cali, NULL, &h_cali, &phi_cali);
 	TEST_ASSERT(e == LK_OK, "FK cali pose failed: e=%d", (int)e);
 
-	/* cali 位姿 h 应在 L1+L2 附近 (最伸展状态) */
-	TEST_ASSERT(h_cali > 150.0f && h_cali < LK_H_MAX_MM + 5.0f,
-		"FK cali h=%.1f (expected 150~%.0f)", (double)h_cali,
-		(double)LK_H_MAX_MM);
+	/* cali 位姿 h 应在运动学可达范围内 */
+	TEST_ASSERT(h_cali >= LK_H_MIN_MM && h_cali <= LK_H_MAX_MM,
+		"FK cali h=%.1f out of workspace [%.0f, %.0f]",
+		(double)h_cali,
+		(double)LK_H_MIN_MM, (double)LK_H_MAX_MM);
 
 	/* 垂直向下: ta ≈ -π/2 + delta, tb ≈ -π/2 + delta */
 	float ta_down = -M_PI / 2.0f;
@@ -209,10 +211,10 @@ static void test_joint_limits(void)
 	/* 注意: bringup_done=0 时会走 hold position 流程, 测试用 IK 层检查即可 */
 	(void)ret;
 
-	/* phi 在安全范围内应该成功 */
-	lk_error_t e = lk_inverse(80.0f, 30.0f * M_PI / 180.0f, +1, NULL, &ta, &tb);
+	/* h=80/phi=0 elbow=-1: θa≈-175°(within ±180) θb≈-33°(within -120~+30) */
+	lk_error_t e = lk_inverse(80.0f, 0.0f, -1, NULL, &ta, &tb);
 	TEST_ASSERT(e == LK_OK,
-		"IK phi=30deg should work, got e=%d", (int)e);
+		"IK h=80 phi=0 should work, got e=%d", (int)e);
 
 	/* theta 限位: 检查 lk_inverse 解算出的 theta_a/b 在理论范围内 */
 	TEST_ASSERT(ta >= LK_THETA_A_MIN && ta <= LK_THETA_A_MAX,

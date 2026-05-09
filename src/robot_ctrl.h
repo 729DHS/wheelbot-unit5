@@ -49,6 +49,7 @@ struct robot_ctrl_state {
 
 	uint16_t stall_counter;       /* 堵转 debounce 计数 */
 	bool stall_triggered;         /* 堵转保护已触发 */
+	uint16_t traj_tick;           /* 轨迹已运行 tick 数 (堵转宽限用) */
 };
 
 extern struct robot_ctrl_state g_robot;

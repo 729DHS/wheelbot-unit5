@@ -1,11 +1,14 @@
 /**
  * @file linkage_kinematics.c
- * @brief 2-DOF 腿机构运动学: IK/FK 实现 (CMSIS-DSP 加速)
+ * @brief 2-DOF 腿机构运动学: IK/FK 实现
  *
- * STM32F4 硬件 FPU + CMSIS-DSP 三角函数加速。
- * arm_sin_cos_f32 单次调用同时得 sin/cos, 比两次标准库调用省 ~30% 周期。
- * arm_sqrt_f32 使用 FPU VSQRT 指令, 比 sqrtf 快 ~15%。
- * atan2f / acosf 在 CMSIS-DSP 中无对应, 保留 math.h。
+ * STM32F4 硬件 FPU 自动加速 sinf/cosf/sqrtf。
+ * arm_sqrt_f32 使用 CMSIS-DSP 内联 VSQRT 指令。
+ * atan2f / acosf 来自标准 math.h。
+ *
+ * @note arm_sin_cos_f32 不可用: Zephyr 3.7 CMSIS-DSP ControllerFunctions
+ *   实现在 STM32F4 上有精度问题, IK→FK 往返误差可达 175mm。
+ *   改用标准 sinf/cosf, FPU 硬件保证精度。
  */
 
 #include "linkage_kinematics.h"
@@ -38,8 +41,8 @@ lk_error_t lk_inverse(float h, float phi, int elbow,
 	const float L2 = LK_L2_MM;
 
 	/* P7 in mechanism frame: phi=0 → OP7 = (0, -h) */
-	float s_phi, c_phi;
-	arm_sin_cos_f32(phi, &s_phi, &c_phi);
+	float s_phi = sinf(phi);
+	float c_phi = cosf(phi);
 	float Px = -h * s_phi;
 	float Py = -h * c_phi;
 
@@ -68,8 +71,8 @@ lk_error_t lk_inverse(float h, float phi, int elbow,
 	theta_a = lk_wrap_pi(theta_a);
 
 	/* theta_b from geometry */
-	float sin_a, cos_a;
-	arm_sin_cos_f32(theta_a, &sin_a, &cos_a);
+	float sin_a = sinf(theta_a);
+	float cos_a = cosf(theta_a);
 	float theta_b = atan2f(Py - L1 * sin_a,
 	                       Px - L1 * cos_a);
 
@@ -133,9 +136,10 @@ lk_error_t lk_forward(float theta_a, float theta_b,
 	const float L1 = LK_L1_MM;
 	const float L2 = LK_L2_MM;
 
-	float sin_a, cos_a, sin_b, cos_b;
-	arm_sin_cos_f32(theta_a, &sin_a, &cos_a);
-	arm_sin_cos_f32(theta_b, &sin_b, &cos_b);
+	float sin_a = sinf(theta_a);
+	float cos_a = cosf(theta_a);
+	float sin_b = sinf(theta_b);
+	float cos_b = cosf(theta_b);
 
 	float Px = L1 * cos_a + L2 * cos_b;
 	float Py = L1 * sin_a + L2 * sin_b;

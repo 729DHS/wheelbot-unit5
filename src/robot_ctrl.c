@@ -73,6 +73,7 @@ static void start_trajectory(float h_from, float phi_from,
 	g_robot.traj_phi_current = phi_from;
 	g_robot.traj_h_vel = 0.0f;
 	g_robot.traj_phi_vel = 0.0f;
+	g_robot.traj_tick = 0U;
 	g_robot.traj_active = true;
 
 	printk("TRAJ START: h %.1f→%.1f mm  phi %.1f→%.1f deg  "
@@ -100,6 +101,7 @@ static void trajectory_step(void)
 
 	g_robot.traj_h_current = h;
 	g_robot.traj_phi_current = phi;
+	g_robot.traj_tick++;
 
 	/* 下发当前插值位置 */
 	int ret = leg_move_all(h, phi * 3.1415926535f / 180.0f);
@@ -133,6 +135,12 @@ static void trajectory_step(void)
 
 static void stall_check(void)
 {
+	/* 轨迹启动宽限期: 前 100 tick (200ms) 跳过堵转检测,
+	 * 梯形加速初始阶段速度从零爬升, 位置误差正常偏高 */
+	if (g_robot.traj_tick < 100U) {
+		return;
+	}
+
 	bool cond = false;
 
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
