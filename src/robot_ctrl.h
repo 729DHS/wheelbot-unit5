@@ -11,10 +11,21 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "linkage_kinematics.h"
 
-/* 轨迹限速 */
-#define TRAJ_H_SPEED_MM_PER_S      10.0f
-#define TRAJ_PHI_SPEED_DEG_PER_S   2.0f
+/* ---------- 用户级操作范围 (比运动学安全限位更保守) ---------- */
+#define ROBOT_H_USER_MIN_MM    LK_H_SAFE_MIN      /* 45→50 mm */
+#define ROBOT_H_USER_MAX_MM    100.0f             /* 安全操作上限 */
+#define ROBOT_PHI_USER_DEG     LK_PHI_SAFE_MAX_DEG /* 55 deg */
+#define ROBOT_PHI_USER_MAX_DEG 30.0f              /* 安全操作上限 */
+
+/* 轨迹限速 (来自运动学统一常量) */
+#define TRAJ_H_SPEED_MM_PER_S      LK_H_MAX_SPEED_MMPS
+#define TRAJ_PHI_SPEED_DEG_PER_S   (LK_PHI_MAX_SPEED_RADPS * 180.0f / M_PI)
+
+/* 轨迹加速度限制 */
+#define TRAJ_H_ACCEL_MM_PER_S2     LK_H_MAX_ACCEL_MMPS2
+#define TRAJ_PHI_ACCEL_DEG_PER_S2  (LK_PHI_MAX_ACCEL_RADPS2 * 180.0f / M_PI)
 
 /* 轨迹模式位置增益 (中等刚度, 避免抖动) */
 #define TRAJ_KP  20.0f
@@ -33,8 +44,8 @@ struct robot_ctrl_state {
 	float traj_phi_target;        /* 最终目标 phi (deg) */
 	float traj_h_current;         /* 当前插值 h */
 	float traj_phi_current;       /* 当前插值 phi */
-	float traj_h_step_per_tick;   /* h 步长 (mm/tick, 带符号) */
-	float traj_phi_step_per_tick; /* phi 步长 (deg/tick, 带符号) */
+	float traj_h_vel;             /* 当前 h 速度 (mm/s, 带符号) */
+	float traj_phi_vel;           /* 当前 phi 速度 (deg/s, 带符号) */
 
 	uint16_t stall_counter;       /* 堵转 debounce 计数 */
 	bool stall_triggered;         /* 堵转保护已触发 */

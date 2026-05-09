@@ -11,4 +11,6 @@ target_sources(app PRIVATE
 	src/leg_control.c
 	src/motor_debug.c
 	src/robot_ctrl.c
+	src/protocol_service.c
+	src/kinematics_test.c
 )

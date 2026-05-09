@@ -36,17 +36,66 @@
 #define M_PI 3.14159265358979323846f
 #endif
 
+/** rad → deg (常量表达式用) */
+#define LK_RAD2DEG(r) ((r) * 180.0f / M_PI)
+
+/* 安全限位对应的度数值 (供其他模块引用) */
+#define LK_PHI_SAFE_MIN_DEG  (-55.0f)
+#define LK_PHI_SAFE_MAX_DEG  ( 55.0f)
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* ---------- constants ---------- */
-#define LK_L1_MM   (107.4f)   /* |O->P2| */
-#define LK_L2_MM   (128.0f)   /* |P2->P7| */
+/* ---------- 机构几何常量 ---------- */
+#define LK_L1_MM   (107.4f)   /* |O->P2|, 主动臂长 */
+#define LK_L2_MM   (128.0f)   /* |P2->P7|, 从动臂长 */
 
-/* 理论工作空间 (运动学可达) */
-#define LK_H_MIN_MM  (20.6f)  /* abs(L1 - L2) */
-#define LK_H_MAX_MM  (235.4f) /* L1 + L2 */
+/* ---------- 理论工作空间 (运动学可达) ---------- */
+#define LK_H_MIN_MM  (20.6f)  /* abs(L1 - L2), 完全收缩 */
+#define LK_H_MAX_MM  (235.4f) /* L1 + L2, 完全伸展 */
+
+/* ---------- 安全余量 (机构限位比理论值收窄) ---------- */
+#define LK_H_MARGIN_MM      (5.0f)      /* h 向余量 (两侧各收窄) */
+#define LK_PHI_MARGIN_RAD   (0.087266f) /* φ 向余量 = 5 deg */
+#define LK_THETA_MARGIN_RAD (0.087266f) /* θ 向余量 = 5 deg */
+
+/* ---------- 关节空间安全限位 (机构帧 rad, 理论限位 - 余量) ---------- */
+#define LK_THETA_A_SAFE_MIN  (-3.054326f)  /* -175 deg (理论 -180) */
+#define LK_THETA_A_SAFE_MAX  ( 0.261799f)  /*  +15 deg (理论  +20) */
+#define LK_THETA_B_SAFE_MIN  (-2.007129f)  /* -115 deg (理论 -120) */
+#define LK_THETA_B_SAFE_MAX  ( 0.436332f)  /*  +25 deg (理论  +30) */
+
+/* ---------- 任务空间安全限位 (h/φ, 理论限位 - 余量) ---------- */
+#define LK_H_SAFE_MIN      (50.0f)       /* mm (理论 45, +5 余量) */
+#define LK_H_SAFE_MAX      (225.0f)      /* mm (理论 235.4, -10 余量) */
+#define LK_PHI_SAFE_MIN    (-0.959931f)  /* -55 deg */
+#define LK_PHI_SAFE_MAX    ( 0.959931f)  /* +55 deg */
+
+/* ---------- 关节空间理论限位 (机构帧, rad) ----------
+ * 仅作参考, 运行时使用 SAFE 限位 */
+#define LK_THETA_A_MIN  (-3.141593f)  /* -180 deg */
+#define LK_THETA_A_MAX  ( 0.349066f)  /*  +20 deg */
+#define LK_THETA_B_MIN  (-2.094395f)  /* -120 deg */
+#define LK_THETA_B_MAX  ( 0.523599f)  /*  +30 deg */
+
+/* ---------- 任务空间软限位 (h/φ, 保留兼容旧代码) ----------
+ * @deprecated 新代码应使用 LK_H_SAFE_* / LK_PHI_SAFE_* */
+#define LK_H_SOFT_MIN     (LK_H_SAFE_MIN)
+#define LK_H_SOFT_MAX     (LK_H_SAFE_MAX)
+#define LK_PHI_SOFT_MIN   (LK_PHI_SAFE_MIN)
+#define LK_PHI_SOFT_MAX   (LK_PHI_SAFE_MAX)
+
+/* ---------- 速度限制 ---------- */
+#define LK_H_MAX_SPEED_MMPS     (15.0f)  /* h 向最大速度 mm/s */
+#define LK_PHI_MAX_SPEED_RADPS  (0.087266f) /* φ 向最大速度 5 deg/s */
+
+/* ---------- 加速度限制 ---------- */
+#define LK_H_MAX_ACCEL_MMPS2     (30.0f)      /* h 向最大加速度 mm/s² */
+#define LK_PHI_MAX_ACCEL_RADPS2  (0.174533f)  /* φ 向最大加速度 10 deg/s² */
+
+/* ---------- 电机增量限制 (每 tick) ---------- */
+#define LK_MOTOR_MAX_DELTA_RAD   (0.03f)  /* 单 tick 最大位置变化 (500Hz → 15rad/s) */
 
 /* 固定机械偏置: θ = LK_Mx_DIR * motor + OFFSET (机构帧, rad)
  * cali 位姿: motor=0 时 θa = LK_OFFSET_A, θb = LK_OFFSET_B
@@ -72,18 +121,6 @@ static inline float lk_m4_to_theta_a(float m) { return LK_M4_DIR * m + LK_OFFSET
 static inline float lk_m3_to_theta_b(float m) { return LK_M3_DIR * m + LK_OFFSET_B; }
 static inline float lk_theta_a_to_m4(float t) { return LK_M4_DIR * (t - LK_OFFSET_A); }
 static inline float lk_theta_b_to_m3(float t) { return LK_M3_DIR * (t - LK_OFFSET_B); }
-
-/* 关节空间限位 (机构帧, 编码器+offset后, rad) */
-#define LK_THETA_A_MIN  (-3.141593f)  /* -180 deg */
-#define LK_THETA_A_MAX  ( 0.349066f)  /*  +20 deg */
-#define LK_THETA_B_MIN  (-2.094395f)  /* -120 deg */
-#define LK_THETA_B_MAX  ( 0.523599f)  /*  +30 deg */
-
-/* 任务空间软限位 (h/φ 空间) */
-#define LK_H_SOFT_MIN     (45.0f)       /* mm, κ<5 近奇异区 */
-#define LK_H_SOFT_MAX     (235.4f)      /* mm, L1+L2 奇异 */
-#define LK_PHI_SOFT_MIN   (-1.047198f)  /* -60 deg */
-#define LK_PHI_SOFT_MAX   ( 1.047198f)  /* +60 deg */
 
 /* ---------- error codes ---------- */
 typedef enum {

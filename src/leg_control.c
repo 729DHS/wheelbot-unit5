@@ -15,9 +15,8 @@
 #include <zephyr/sys/printk.h>
 
 #define EST_FOOT_FORCE_N  20.0f
-#define H_SOFT_LIMIT_MM    45.0f
-#define MOTOR_DELTA_LIMIT_RAD 0.05f
-#define JOINT_MARGIN_RAD   (5.0f * 3.1415926535f / 180.0f) /* 5 deg */
+#define MOTOR_DELTA_LIMIT_RAD LK_MOTOR_MAX_DELTA_RAD
+#define JOINT_MARGIN_RAD   LK_THETA_MARGIN_RAD
 
 static float prev_ta_left, prev_tb_left;
 static float prev_ta_right, prev_tb_right;
@@ -88,13 +87,13 @@ int leg_move_to_left(float h_mm, float phi_rad)
 	float ta, tb;
 	float h_clamped = h_mm;
 
-	if (h_clamped < H_SOFT_LIMIT_MM) {
+	if (h_clamped < LK_H_SAFE_MIN) {
 		static uint32_t warn_cnt;
 		if ((warn_cnt++ % 500) == 0) {
-			printk("WARNING: h=%.1f < %dmm, clamping\n",
-			       (double)h_mm, (int)H_SOFT_LIMIT_MM);
+			printk("WARNING: h=%.1f < %.0fmm, clamping\n",
+			       (double)h_mm, (double)LK_H_SAFE_MIN);
 		}
-		h_clamped = H_SOFT_LIMIT_MM;
+		h_clamped = LK_H_SAFE_MIN;
 	}
 
 	if (ik_safe(h_clamped, phi_rad, prev_ta_left, prev_tb_left, &ta, &tb) != LK_OK) {
@@ -128,13 +127,13 @@ int leg_move_to_right(float h_mm, float phi_rad)
 	float ta, tb;
 	float h_clamped = h_mm;
 
-	if (h_clamped < H_SOFT_LIMIT_MM) {
+	if (h_clamped < LK_H_SAFE_MIN) {
 		static uint32_t warn_cnt;
 		if ((warn_cnt++ % 500) == 0) {
 			printk("WARNING: h=%.1f < %dmm, clamping\n",
-			       (double)h_mm, (int)H_SOFT_LIMIT_MM);
+			       (double)h_mm, (int)LK_H_SAFE_MIN);
 		}
-		h_clamped = H_SOFT_LIMIT_MM;
+		h_clamped = LK_H_SAFE_MIN;
 	}
 
 	/*
@@ -197,7 +196,7 @@ void leg_init_prev_right(float ta, float tb)
 /* 诊断: 只算不跑, 打印全链路 */
 void leg_diag(float h_mm, float phi_rad)
 {
-	float h = (h_mm < H_SOFT_LIMIT_MM) ? H_SOFT_LIMIT_MM : h_mm;
+	float h = (h_mm < LK_H_SAFE_MIN) ? LK_H_SAFE_MIN : h_mm;
 	float ta_L, tb_L, ta_R, tb_R;
 
 	/* 当前 FK */

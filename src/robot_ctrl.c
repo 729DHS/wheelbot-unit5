@@ -1,12 +1,17 @@
 /**
  * @file robot_ctrl.c
- * @brief 轨迹插值 + jog 微调 + 堵转保护
+ * @brief 轨迹插值 (梯形加减速) + jog 微调 + 堵转保护
  *
  * 500Hz 控制循环内执行:
- *   1. 轨迹插值 (h ≤2mm/s, phi ≤0.5deg/s)
+ *   1. 梯形加减速轨迹 (加速→匀速→减速)
  *   2. 调 leg_move_all() 下发目标
  *   3. 堵转/碰撞检测 (100ms debounce → 自动 stop)
+ *
+ * 加减速算法:
+ *   每 tick 根据剩余距离计算目标速度 v_target = sign(d) * min(v_max, sqrt(2*a*|d|))
+ *   速度变化率限制在 ±a*dt 内, 自然形成梯形轮廓。
  */
+
 #include "robot_ctrl.h"
 #include "leg_control.h"
 #include "linkage_kinematics.h"
@@ -20,51 +25,78 @@ struct robot_ctrl_state g_robot;
 /* 控制周期 2ms */
 #define TICK_S  0.002f
 
+/* ================================================================
+ *  梯形加减速轨迹
+ * ================================================================ */
+
+/** @brief 单轴加速度限制步进
+ *  @param cur      当前位置
+ *  @param target   目标位置
+ *  @param vel      当前速度 (in/out)
+ *  @param v_max    最大速度 (正数)
+ *  @param a_max    最大加速度 (正数)
+ *  @return 新位置
+ */
+static float accel_limited_step(float cur, float target,
+				float *vel, float v_max, float a_max)
+{
+	float dist = target - cur;
+
+	if (fabsf(dist) < 1e-6f) {
+		*vel = 0.0f;
+		return target;
+	}
+
+	int sign = (dist > 0.0f) ? 1 : -1;
+
+	/* 目标速度: min(匀速上限, 按 a_max 能在剩余距离内停下) */
+	float v_stop = sqrtf(2.0f * a_max * fabsf(dist));
+	float v_target = (v_stop < v_max) ? v_stop : v_max;
+	v_target *= (float)sign;
+
+	/* 速度变化率限制 */
+	float a_step = a_max * TICK_S;
+	float dv = v_target - *vel;
+	if (dv >  a_step) dv =  a_step;
+	if (dv < -a_step) dv = -a_step;
+
+	*vel += dv;
+	return cur + *vel * TICK_S;
+}
+
 static void start_trajectory(float h_from, float phi_from,
 			     float h_to, float phi_to)
 {
-	float dh = h_to - h_from;
-	float dphi = phi_to - phi_from;
-
 	g_robot.traj_h_target = h_to;
 	g_robot.traj_phi_target = phi_to;
 	g_robot.traj_h_current = h_from;
 	g_robot.traj_phi_current = phi_from;
-
-	/* 每 tick 步长 (带符号方向) */
-	float max_h_step = TRAJ_H_SPEED_MM_PER_S * TICK_S;
-	float max_phi_step = TRAJ_PHI_SPEED_DEG_PER_S * TICK_S;
-
-	g_robot.traj_h_step_per_tick = (dh > 0 ? 1.0f : -1.0f) * max_h_step;
-	g_robot.traj_phi_step_per_tick = (dphi > 0 ? 1.0f : -1.0f) * max_phi_step;
-
+	g_robot.traj_h_vel = 0.0f;
+	g_robot.traj_phi_vel = 0.0f;
 	g_robot.traj_active = true;
 
-	printk("TRAJ START: h %.1f→%.1f (step=%.3f) phi %.1f→%.1f (step=%.3f)\n",
-	       (double)h_from, (double)h_to, (double)g_robot.traj_h_step_per_tick,
-	       (double)phi_from, (double)phi_to, (double)g_robot.traj_phi_step_per_tick);
+	printk("TRAJ START: h %.1f→%.1f mm  phi %.1f→%.1f deg  "
+	       "(v_max=%.0fmm/s a=%.0fmm/s²)\n",
+	       (double)h_from, (double)h_to,
+	       (double)phi_from, (double)phi_to,
+	       (double)TRAJ_H_SPEED_MM_PER_S,
+	       (double)TRAJ_H_ACCEL_MM_PER_S2);
 }
 
-/* 一步插值: 向目标逼近, 到达后清零 traj_active */
+/** @brief 梯形加减速一步插值 */
 static void trajectory_step(void)
 {
-	float h = g_robot.traj_h_current;
-	float phi = g_robot.traj_phi_current;
-	bool h_done = false, phi_done = false;
+	float h = accel_limited_step(g_robot.traj_h_current,
+				      g_robot.traj_h_target,
+				      &g_robot.traj_h_vel,
+				      TRAJ_H_SPEED_MM_PER_S,
+				      TRAJ_H_ACCEL_MM_PER_S2);
 
-	if (fabsf(g_robot.traj_h_target - h) <= fabsf(g_robot.traj_h_step_per_tick)) {
-		h = g_robot.traj_h_target;
-		h_done = true;
-	} else {
-		h += g_robot.traj_h_step_per_tick;
-	}
-
-	if (fabsf(g_robot.traj_phi_target - phi) <= fabsf(g_robot.traj_phi_step_per_tick)) {
-		phi = g_robot.traj_phi_target;
-		phi_done = true;
-	} else {
-		phi += g_robot.traj_phi_step_per_tick;
-	}
+	float phi = accel_limited_step(g_robot.traj_phi_current,
+					g_robot.traj_phi_target,
+					&g_robot.traj_phi_vel,
+					TRAJ_PHI_SPEED_DEG_PER_S,
+					TRAJ_PHI_ACCEL_DEG_PER_S2);
 
 	g_robot.traj_h_current = h;
 	g_robot.traj_phi_current = phi;
@@ -79,15 +111,26 @@ static void trajectory_step(void)
 		return;
 	}
 
+	/* 检查到达: 位置逼近且速度为零 */
+	bool h_done = (fabsf(g_robot.traj_h_target - h) < 0.5f)
+		      && (fabsf(g_robot.traj_h_vel) < 1.0f);
+	bool phi_done = (fabsf(g_robot.traj_phi_target - phi) < 0.1f)
+			&& (fabsf(g_robot.traj_phi_vel) < 0.2f);
+
 	if (h_done && phi_done) {
 		g_robot.traj_active = false;
+		g_robot.traj_h_vel = 0.0f;
+		g_robot.traj_phi_vel = 0.0f;
 		printk("TRAJ DONE: h=%.1f phi=%.1f\n",
 		       (double)g_robot.traj_h_target,
 		       (double)g_robot.traj_phi_target);
 	}
 }
 
-/* 堵转/碰撞检测 (每 tick) */
+/* ================================================================
+ *  堵转保护
+ * ================================================================ */
+
 static void stall_check(void)
 {
 	bool cond = false;
@@ -97,25 +140,21 @@ static void stall_check(void)
 				      g_dm4310.motor[i].pos_rad);
 		float vel = fabsf(g_dm4310.motor[i].vel_radps);
 
-		/* 条件 1: 位置误差大 + 电机几乎不动 → 堵转 */
 		if (pos_err > STALL_POS_ERR_RAD && vel < STALL_VEL_THRESHOLD) {
 			cond = true;
 		}
 
-		/* 条件 2: 力矩超安全阈值 */
 		if (fabsf(g_dm4310.motor[i].torque_nm) > STALL_TORQUE_NM) {
 			cond = true;
 		}
 	}
 
-	/* 条件 3: 单电机力矩明显大于其他三台 */
 	float t[DM4310_MOTOR_COUNT];
 	float t_max = 0.0f, t_sum = 0.0f;
-	int max_i = 0;
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
 		t[i] = fabsf(g_dm4310.motor[i].torque_nm);
 		t_sum += t[i];
-		if (t[i] > t_max) { t_max = t[i]; max_i = i; }
+		if (t[i] > t_max) { t_max = t[i]; }
 	}
 	float t_avg_others = (t_sum - t_max) / 3.0f;
 	if (t_max > STALL_TORQUE_RATIO * t_avg_others && t_max > 1.0f) {
@@ -147,14 +186,14 @@ static void stall_check(void)
 	}
 }
 
+/* ================================================================
+ *  公开接口
+ * ================================================================ */
+
 void robot_ctrl_tick(void)
 {
 	if (g_robot.traj_active) {
 		trajectory_step();
-	}
-
-	/* 堵转检测仅轨迹运动时生效 (拖拽模式手推自然产生误差, 无误触发) */
-	if (g_robot.traj_active) {
 		stall_check();
 	}
 }
@@ -165,11 +204,9 @@ int robot_ctrl_move_to(float h_mm, float phi_deg)
 		return -1;
 	}
 
-	/* 从当前位置开始插值 */
 	start_trajectory(g_robot.traj_h_current, g_robot.traj_phi_current,
 			 h_mm, phi_deg);
 
-	/* 设轨迹模式增益 */
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
 		g_dm4310.hold_kp[i] = TRAJ_KP;
 		g_dm4310.hold_kd[i] = TRAJ_KD;
@@ -187,15 +224,12 @@ int robot_ctrl_jog_h(float delta_mm)
 {
 	float new_target = g_robot.traj_h_current + delta_mm;
 
-	if (new_target < 45.0f || new_target > 100.0f) {
+	if (new_target < ROBOT_H_USER_MIN_MM || new_target > ROBOT_H_USER_MAX_MM) {
 		return -1;
 	}
 
 	if (g_robot.traj_active) {
 		g_robot.traj_h_target = new_target;
-		float dh = new_target - g_robot.traj_h_current;
-		float max_step = TRAJ_H_SPEED_MM_PER_S * TICK_S;
-		g_robot.traj_h_step_per_tick = (dh > 0 ? 1.0f : -1.0f) * max_step;
 	} else {
 		start_trajectory(g_robot.traj_h_current, g_robot.traj_phi_current,
 				 new_target, g_robot.traj_phi_current);
@@ -213,15 +247,12 @@ int robot_ctrl_jog_phi(float delta_deg)
 {
 	float new_target = g_robot.traj_phi_current + delta_deg;
 
-	if (new_target < -30.0f || new_target > 30.0f) {
+	if (new_target < -ROBOT_PHI_USER_MAX_DEG || new_target > ROBOT_PHI_USER_MAX_DEG) {
 		return -1;
 	}
 
 	if (g_robot.traj_active) {
 		g_robot.traj_phi_target = new_target;
-		float dphi = new_target - g_robot.traj_phi_current;
-		float max_step = TRAJ_PHI_SPEED_DEG_PER_S * TICK_S;
-		g_robot.traj_phi_step_per_tick = (dphi > 0 ? 1.0f : -1.0f) * max_step;
 	} else {
 		start_trajectory(g_robot.traj_h_current, g_robot.traj_phi_current,
 				 g_robot.traj_h_current, new_target);
@@ -238,6 +269,8 @@ int robot_ctrl_jog_phi(float delta_deg)
 void robot_ctrl_stop(void)
 {
 	g_robot.traj_active = false;
+	g_robot.traj_h_vel = 0.0f;
+	g_robot.traj_phi_vel = 0.0f;
 	g_robot.stall_counter = 0;
 
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {

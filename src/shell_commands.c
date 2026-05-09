@@ -444,14 +444,16 @@ static int cmd_robot_move(const struct shell *sh, size_t argc, char **argv)
 	float h_mm = (float)atof(argv[1]);
 	float phi_deg = (float)atof(argv[2]);
 
-	if (h_mm < 45.0f || h_mm > 100.0f) {
-		shell_print(sh, "REJECTED: h=%.1f mm out of range (45.0-100.0 mm)",
-			    (double)h_mm);
+	if (h_mm < ROBOT_H_USER_MIN_MM || h_mm > ROBOT_H_USER_MAX_MM) {
+		shell_print(sh, "REJECTED: h=%.1f mm out of range (%.0f-%.0f mm)",
+			    (double)h_mm,
+			    (double)ROBOT_H_USER_MIN_MM, (double)ROBOT_H_USER_MAX_MM);
 		return -EINVAL;
 	}
-	if (phi_deg < -30.0f || phi_deg > 30.0f) {
-		shell_print(sh, "REJECTED: phi=%.1f deg out of range (±30 deg)",
-			    (double)phi_deg);
+	if (phi_deg < -ROBOT_PHI_USER_MAX_DEG || phi_deg > ROBOT_PHI_USER_MAX_DEG) {
+		shell_print(sh, "REJECTED: phi=%.1f deg out of range (±%.0f deg)",
+			    (double)phi_deg,
+			    (double)ROBOT_PHI_USER_MAX_DEG);
 		return -EINVAL;
 	}
 
@@ -488,9 +490,10 @@ static int cmd_robot_jog_h(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	float new_h = g_robot.traj_h_current + delta;
-	if (new_h < 45.0f || new_h > 100.0f) {
-		shell_print(sh, "REJECTED: target h=%.1f mm out of range (45.0-100.0)",
-			    (double)new_h);
+	if (new_h < ROBOT_H_USER_MIN_MM || new_h > ROBOT_H_USER_MAX_MM) {
+		shell_print(sh, "REJECTED: target h=%.1f mm out of range (%.0f-%.0f)",
+			    (double)new_h,
+			    (double)ROBOT_H_USER_MIN_MM, (double)ROBOT_H_USER_MAX_MM);
 		return -EINVAL;
 	}
 
@@ -524,9 +527,10 @@ static int cmd_robot_jog_phi(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	float new_phi = g_robot.traj_phi_current + delta;
-	if (new_phi < -30.0f || new_phi > 30.0f) {
-		shell_print(sh, "REJECTED: target phi=%.1f deg out of range (±30)",
-			    (double)new_phi);
+	if (new_phi < -ROBOT_PHI_USER_MAX_DEG || new_phi > ROBOT_PHI_USER_MAX_DEG) {
+		shell_print(sh, "REJECTED: target phi=%.1f deg out of range (±%.0f)",
+			    (double)new_phi,
+			    (double)ROBOT_PHI_USER_MAX_DEG);
 		return -EINVAL;
 	}
 

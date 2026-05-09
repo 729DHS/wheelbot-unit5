@@ -14,6 +14,7 @@
 #include "dm4310_motor.h"
 #include "motor_debug.h"
 #include "robot_ctrl.h"
+#include "protocol_service.h"
 
 #include <stdio.h>
 #include <stdbool.h>
@@ -72,6 +73,8 @@ int main(void)
 		return ret;
 	}
 	printk("DM4310 driver initialized\n");
+
+	proto_init();
 
 	g_dm4310.hold_kp[0] = 0.01f; g_dm4310.hold_kd[0] = 0.001f;
 	g_dm4310.hold_kp[1] = 0.01f; g_dm4310.hold_kd[1] = 0.001f;
@@ -146,6 +149,7 @@ int main(void)
 				uint32_t now = k_uptime_get_32();
 				telemetry_print(g_motor_shell, now, 0.0f, 0.0f, 0.0f);
 			}
+			proto_telemetry_tick();
 		}
 
 		tick_count++;
