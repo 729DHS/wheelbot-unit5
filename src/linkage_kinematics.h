@@ -88,7 +88,7 @@ extern "C" {
 
 /* ---------- 速度限制 ---------- */
 #define LK_H_MAX_SPEED_MMPS     (15.0f)  /* h 向最大速度 mm/s */
-#define LK_PHI_MAX_SPEED_RADPS  (0.087266f) /* φ 向最大速度 5 deg/s */
+#define LK_PHI_MAX_SPEED_RADPS  (0.261799f) /* φ 向最大速度 15 deg/s */
 
 /* ---------- 加速度限制 ---------- */
 #define LK_H_MAX_ACCEL_MMPS2     (30.0f)      /* h 向最大加速度 mm/s² */

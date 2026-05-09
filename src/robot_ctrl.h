@@ -15,7 +15,7 @@
 
 /* ---------- 用户级操作范围 (比运动学安全限位更保守) ---------- */
 #define ROBOT_H_USER_MIN_MM    LK_H_SAFE_MIN      /* 45→50 mm */
-#define ROBOT_H_USER_MAX_MM    100.0f             /* 安全操作上限 */
+#define ROBOT_H_USER_MAX_MM    150.0f             /* 安全操作上限 */
 #define ROBOT_PHI_USER_DEG     LK_PHI_SAFE_MAX_DEG /* 55 deg */
 #define ROBOT_PHI_USER_MAX_DEG 30.0f              /* 安全操作上限 */
 
@@ -31,11 +31,11 @@
 #define TRAJ_KP  20.0f
 #define TRAJ_KD  0.5f
 
-/* 堵转保护阈值 (bring-up 保守值) */
-#define STALL_POS_ERR_RAD      0.15f
+/* 堵转保护阈值 */
+#define STALL_POS_ERR_RAD      0.30f    /* ~17°, 轨迹正常滞后不会超 */
 #define STALL_VEL_THRESHOLD    0.05f
 #define STALL_TORQUE_NM        3.0f
-#define STALL_DEBOUNCE_TICKS   50
+#define STALL_DEBOUNCE_TICKS   100      /* 200ms, 配合 100tick 宽限期 */
 #define STALL_TORQUE_RATIO     3.0f
 
 struct robot_ctrl_state {

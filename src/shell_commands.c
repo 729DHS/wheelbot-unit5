@@ -544,6 +544,78 @@ static int cmd_robot_jog_phi(const struct shell *sh, size_t argc, char **argv)
 	return ret;
 }
 
+/* leg left <h_mm> <phi_deg> — 仅左腿 (M1+M2) */
+static int cmd_leg_left(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc < 3) {
+		shell_print(sh, "Usage: leg left <h_mm> <phi_deg>");
+		return -EINVAL;
+	}
+	if (!g_dm4310.bringup_done) {
+		shell_print(sh, "Bringup not done");
+		return -EAGAIN;
+	}
+
+	float h = (float)atof(argv[1]);
+	float phi = (float)atof(argv[2]) * 3.1415926535f / 180.0f;
+
+	/* 直接 IK + 设目标, 不走 leg_control delta 限制 */
+	float ta, tb;
+	float hc = (h < LK_H_SAFE_MIN) ? LK_H_SAFE_MIN : h;
+	lk_error_t e = lk_inverse(hc, phi, +1, NULL, &ta, &tb);
+	if (e != LK_OK) {
+		shell_print(sh, "IK FAIL L: h=%.1f phi=%.1f°", (double)hc, (double)(phi*180/M_PI));
+		return -1;
+	}
+	float m1 = lk_theta_a_to_m1(ta);
+	float m2 = lk_theta_b_to_m2(tb);
+	g_dm4310.hold_pos_rad[0] = m1 + g_dm_offset[0];
+	g_dm4310.hold_pos_rad[1] = m2 + g_dm_offset[1];
+	g_dm4310.hold_kp[0] = TRAJ_KP; g_dm4310.hold_kd[0] = TRAJ_KD;
+	g_dm4310.hold_kp[1] = TRAJ_KP; g_dm4310.hold_kd[1] = TRAJ_KD;
+	g_dm4310.feedforward_tau[0] = 0.0f;
+	g_dm4310.feedforward_tau[1] = 0.0f;
+	g_dm4310.hold_updates = 1U;
+	shell_print(sh, "Leg L: h=%.1f phi=%.1f° → M1=%.3f M2=%.3f", (double)hc, (double)(phi*180/M_PI), (double)m1, (double)m2);
+	return 0;
+}
+
+/* leg right <h_mm> <phi_deg> — 仅右腿 (M3+M4) */
+static int cmd_leg_right(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc < 3) {
+		shell_print(sh, "Usage: leg right <h_mm> <phi_deg>");
+		return -EINVAL;
+	}
+	if (!g_dm4310.bringup_done) {
+		shell_print(sh, "Bringup not done");
+		return -EAGAIN;
+	}
+
+	float h = (float)atof(argv[1]);
+	float phi = (float)atof(argv[2]) * 3.1415926535f / 180.0f;
+
+	/* 直接 IK + 设目标 */
+	float ta_r, tb_r;
+	float hc_r = (h < LK_H_SAFE_MIN) ? LK_H_SAFE_MIN : h;
+	lk_error_t e_r = lk_inverse(hc_r, phi, +1, NULL, &ta_r, &tb_r);
+	if (e_r != LK_OK) {
+		shell_print(sh, "IK FAIL R: h=%.1f phi=%.1f°", (double)hc_r, (double)(phi*180/M_PI));
+		return -1;
+	}
+	float m3 = lk_theta_b_to_m3(tb_r);
+	float m4 = lk_theta_a_to_m4(ta_r);
+	g_dm4310.hold_pos_rad[2] = m3 + g_dm_offset[2];
+	g_dm4310.hold_pos_rad[3] = m4 + g_dm_offset[3];
+	g_dm4310.hold_kp[2] = TRAJ_KP; g_dm4310.hold_kd[2] = TRAJ_KD;
+	g_dm4310.hold_kp[3] = TRAJ_KP; g_dm4310.hold_kd[3] = TRAJ_KD;
+	g_dm4310.feedforward_tau[2] = 0.0f;
+	g_dm4310.feedforward_tau[3] = 0.0f;
+	g_dm4310.hold_updates = 1U;
+	shell_print(sh, "Leg R: h=%.1f phi=%.1f° → M3=%.3f M4=%.3f", (double)hc_r, (double)(phi*180/M_PI), (double)m3, (double)m4);
+	return 0;
+}
+
 /* robot stop — 回到拖动模式 (KP=0.01/KD=0.001, 终止轨迹) */
 static int cmd_robot_stop(const struct shell *sh, size_t argc, char **argv)
 {
@@ -816,6 +888,14 @@ SHELL_STATIC_SUBCMD_SET_CREATE(jog_cmds,
 	SHELL_CMD_ARG(phi, NULL, "robot jog phi <delta_deg> (|delta|≤0.2deg)", cmd_robot_jog_phi, 2, 0),
 	SHELL_SUBCMD_SET_END
 );
+
+SHELL_STATIC_SUBCMD_SET_CREATE(leg_cmds,
+	SHELL_CMD_ARG(left,  NULL, "leg left <h_mm> <phi_deg> — left leg only",  cmd_leg_left,  3, 0),
+	SHELL_CMD_ARG(right, NULL, "leg right <h_mm> <phi_deg> — right leg only", cmd_leg_right, 3, 0),
+	SHELL_SUBCMD_SET_END
+);
+
+SHELL_CMD_REGISTER(leg, &leg_cmds, "Single leg control", NULL);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(robot_cmds,
 	SHELL_CMD_ARG(diag, NULL, "robot diag <h_mm> <phi_deg>", cmd_robot_diag, 3, 0),

@@ -137,7 +137,7 @@ static void stall_check(void)
 {
 	/* 轨迹启动宽限期: 前 100 tick (200ms) 跳过堵转检测,
 	 * 梯形加速初始阶段速度从零爬升, 位置误差正常偏高 */
-	if (g_robot.traj_tick < 100U) {
+	if (g_robot.traj_tick < 150U) {
 		return;
 	}
 
@@ -279,6 +279,7 @@ void robot_ctrl_stop(void)
 	g_robot.traj_active = false;
 	g_robot.traj_h_vel = 0.0f;
 	g_robot.traj_phi_vel = 0.0f;
+	g_robot.traj_tick = 0U;
 	g_robot.stall_counter = 0;
 
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
@@ -289,4 +290,21 @@ void robot_ctrl_stop(void)
 	}
 	g_dm4310.hold_updates = 1U;
 	g_dm4310.balance_ramp_remaining = 0U;
+
+	/* FK 同步: 从当前电机位置反算, 保证下次 move 从正确位置起步 */
+	float m[DM4310_MOTOR_COUNT];
+	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
+		m[i] = g_dm4310.motor[i].pos_rad - g_dm_offset[i];
+	}
+	float ta_L = lk_m1_to_theta_a(m[0]);
+	float tb_L = lk_m2_to_theta_b(m[1]);
+	float ta_R = lk_m4_to_theta_a(m[3]);
+	float tb_R = lk_m3_to_theta_b(m[2]);
+	float h_L, phi_L, h_R, phi_R;
+	lk_forward(ta_L, tb_L, NULL, &h_L, &phi_L);
+	lk_forward(ta_R, tb_R, NULL, &h_R, &phi_R);
+	g_robot.traj_h_current = (h_L + h_R) * 0.5f;
+	g_robot.traj_phi_current = (phi_L + phi_R) * 0.5f * 180.0f / 3.1415926535f;
+	leg_init_prev_left(ta_L, tb_L);
+	leg_init_prev_right(ta_R, tb_R);
 }
