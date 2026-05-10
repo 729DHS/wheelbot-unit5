@@ -78,11 +78,6 @@ int main(void)
 
 	proto_init();
 
-	g_dm4310.hold_kp[0] = 0.01f; g_dm4310.hold_kd[0] = 0.001f;
-	g_dm4310.hold_kp[1] = 0.01f; g_dm4310.hold_kd[1] = 0.001f;
-	g_dm4310.hold_kp[2] = 0.01f; g_dm4310.hold_kd[2] = 0.001f;
-	g_dm4310.hold_kp[3] = 0.01f; g_dm4310.hold_kd[3] = 0.001f;
-
 	uint32_t next_wake = DWT->CYCCNT;
 	uint16_t tick_count = 0;
 	bool bringup_reported = false;
@@ -113,36 +108,16 @@ int main(void)
 			if (!bringup_reported) {
 				printk("Bringup done. online=0x%x\n",
 				       g_dm4310.online_mask);
-				/* FK 同步: 从电机当前位置反算任务空间, 初始化轨迹起点 */
-				float m[DM4310_MOTOR_COUNT];
-				for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
-					m[i] = g_dm4310.motor[i].pos_rad - g_dm_offset[i];
-				}
-				float ta_L = lk_m1_to_theta_a(m[0]);
-				float tb_L = lk_m2_to_theta_b(m[1]);
-				float ta_R = lk_m4_to_theta_a(m[3]);
-				float tb_R = lk_m3_to_theta_b(m[2]);
-				float h_L, phi_L, h_R, phi_R;
-				lk_forward(ta_L, tb_L, NULL, &h_L, &phi_L);
-				lk_forward(ta_R, tb_R, NULL, &h_R, &phi_R);
-				g_robot.traj_h_current = (h_L + h_R) * 0.5f;
-				g_robot.traj_phi_current = (phi_L + phi_R) * 0.5f * 180.0f / 3.1415926535f;
-				leg_init_prev_left(ta_L, tb_L);
-				leg_init_prev_right(ta_R, tb_R);
-
-				/* 电机以当前位置为目标, 极小增益保持 (自由拖动模式) */
+				/* 拖动模式: 极小增益, 可手拽 */
 				for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
 					g_dm4310.hold_pos_rad[i] = g_dm4310.motor[i].pos_rad;
+					g_dm4310.hold_kp[i] = 0.01f;
+					g_dm4310.hold_kd[i] = 0.001f;
 				}
 				g_dm4310.hold_updates = 1U;
-
-				printk("FK init: h=%.1f phi=%.1f deg\n",
-				       (double)g_robot.traj_h_current,
-				       (double)g_robot.traj_phi_current);
+				printk("DRAG mode ready. Run 'robot cali' to calibrate.\n");
 				bringup_reported = true;
 			}
-
-			robot_ctrl_tick();
 		}
 
 		dm4310_tick();

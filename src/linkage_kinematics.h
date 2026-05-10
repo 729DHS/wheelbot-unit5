@@ -95,7 +95,7 @@ extern "C" {
 #define LK_PHI_MAX_ACCEL_RADPS2  (0.174533f)  /* φ 向最大加速度 10 deg/s² */
 
 /* ---------- 电机增量限制 (每 tick) ---------- */
-#define LK_MOTOR_MAX_DELTA_RAD   (0.03f)  /* 单 tick 最大位置变化 (500Hz → 15rad/s) */
+#define LK_MOTOR_MAX_DELTA_RAD   (0.06f)  /* 单 tick 最大位置变化 (500Hz → 30rad/s, 匹配电机max) */
 
 /* 固定机械偏置: θ = LK_Mx_DIR * motor + OFFSET (机构帧, rad)
  * cali 位姿: motor=0 时 θa = LK_OFFSET_A, θb = LK_OFFSET_B
@@ -104,10 +104,10 @@ extern "C" {
 #define LK_OFFSET_A  (-2.834415f)   /* -162.4 deg */
 #define LK_OFFSET_B  (-0.174533f)   /*  -10.0 deg */
 
-/* 逐电机编码器方向: M4 反向安装 */
+/* 逐电机编码器方向: M3/M4右腿均反向安装 */
 #define LK_M1_DIR  ( 1.0f)
 #define LK_M2_DIR  ( 1.0f)
-#define LK_M3_DIR  ( 1.0f)
+#define LK_M3_DIR  (-1.0f)
 #define LK_M4_DIR  (-1.0f)
 
 /* 左腿: M1→θa, M2→θb */
@@ -116,11 +116,11 @@ static inline float lk_m2_to_theta_b(float m) { return LK_M2_DIR * m + LK_OFFSET
 static inline float lk_theta_a_to_m1(float t) { return LK_M1_DIR * (t - LK_OFFSET_A); }
 static inline float lk_theta_b_to_m2(float t) { return LK_M2_DIR * (t - LK_OFFSET_B); }
 
-/* 右腿: M4→θa, M3→θb */
-static inline float lk_m4_to_theta_a(float m) { return LK_M4_DIR * m + LK_OFFSET_A; }
-static inline float lk_m3_to_theta_b(float m) { return LK_M3_DIR * m + LK_OFFSET_B; }
-static inline float lk_theta_a_to_m4(float t) { return LK_M4_DIR * (t - LK_OFFSET_A); }
-static inline float lk_theta_b_to_m3(float t) { return LK_M3_DIR * (t - LK_OFFSET_B); }
+/* 右腿: M3→θa, M4→θb (均反向) */
+static inline float lk_m3_to_theta_a(float m) { return LK_M3_DIR * m + LK_OFFSET_A; }
+static inline float lk_m4_to_theta_b(float m) { return LK_M4_DIR * m + LK_OFFSET_B; }
+static inline float lk_theta_a_to_m3(float t) { return LK_M3_DIR * (t - LK_OFFSET_A); }
+static inline float lk_theta_b_to_m4(float t) { return LK_M4_DIR * (t - LK_OFFSET_B); }
 
 /* ---------- error codes ---------- */
 typedef enum {

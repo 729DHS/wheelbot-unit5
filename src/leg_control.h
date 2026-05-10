@@ -36,6 +36,15 @@ int leg_move_to_right(float h_mm, float phi_rad);
  */
 int leg_move_all(float h_mm, float phi_rad);
 
+/**
+ * @brief 直接设置腿位置 (无增量限制, 用于 Shell 调试)
+ * @param h_mm    足端距离 (mm)
+ * @param phi_rad 摆动角 (rad)
+ * @return 0 成功, 负值错误
+ */
+int leg_set_left(float h_mm, float phi_rad);
+int leg_set_right(float h_mm, float phi_rad);
+
 void leg_init_prev_left(float ta, float tb);
 void leg_init_prev_right(float ta, float tb);
 

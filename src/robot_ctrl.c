@@ -144,7 +144,7 @@ static void stall_check(void)
 	bool cond = false;
 
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
-		float pos_err = fabsf(g_dm4310.hold_pos_rad[i] -
+		float pos_err = fabsf(dm4310_get_hold_pos((uint8_t)(i + 1)) -
 				      g_dm4310.motor[i].pos_rad);
 		float vel = fabsf(g_dm4310.motor[i].vel_radps);
 
@@ -218,7 +218,7 @@ int robot_ctrl_move_to(float h_mm, float phi_deg)
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
 		g_dm4310.hold_kp[i] = TRAJ_KP;
 		g_dm4310.hold_kd[i] = TRAJ_KD;
-		g_dm4310.feedforward_tau[i] = 0.0f;
+		dm4310_set_feedforward_tau((uint8_t)(i + 1), 0.0f);
 	}
 
 	g_robot.stall_triggered = false;
@@ -285,7 +285,7 @@ void robot_ctrl_stop(void)
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
 		g_dm4310.hold_kp[i] = 0.01f;
 		g_dm4310.hold_kd[i] = 0.001f;
-		g_dm4310.feedforward_tau[i] = 0.0f;
+		dm4310_set_feedforward_tau((uint8_t)(i + 1), 0.0f);
 		g_dm4310.hold_pos_rad[i] = g_dm4310.motor[i].pos_rad;
 	}
 	g_dm4310.hold_updates = 1U;
@@ -298,8 +298,8 @@ void robot_ctrl_stop(void)
 	}
 	float ta_L = lk_m1_to_theta_a(m[0]);
 	float tb_L = lk_m2_to_theta_b(m[1]);
-	float ta_R = lk_m4_to_theta_a(m[3]);
-	float tb_R = lk_m3_to_theta_b(m[2]);
+	float ta_R = lk_m3_to_theta_a(m[2]);
+	float tb_R = lk_m4_to_theta_b(m[3]);
 	float h_L, phi_L, h_R, phi_R;
 	lk_forward(ta_L, tb_L, NULL, &h_L, &phi_L);
 	lk_forward(ta_R, tb_R, NULL, &h_R, &phi_R);

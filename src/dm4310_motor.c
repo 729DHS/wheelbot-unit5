@@ -30,30 +30,9 @@
 
 /* CAN 反馈帧由 ISR 拷贝到 ring buffer，主循环 drain_rx 解码 (浮点在主循环) */
 
-#define DM4310_OUTPUT_ENABLED 1
-#define DM4310_CAN1_HOME_ENABLED 0
-#define DM4310_HOME_START_IDX 0U
-#define DM4310_NORMAL_OUTPUT_ENABLED 1
-#define DM4310_CAN1_HOME_USE_FLASH 0
-#define DM4310_CAN1_HOME_NVS_ID 1U
-#define DM4310_CAN1_HOME_MAGIC 0x4331484dU
-#define DM4310_CAN1_HOME_VERSION 4U
-#define DM4310_CAN1_HOME_ENABLE_TICKS 200U
-#define DM4310_CAN1_HOME_MODE_TICKS 100U
-#define DM4310_CAN1_HOLD_KP 100.0f
-#define DM4310_CAN1_HOLD_KD 2.2f
-#define DM4310_CAN2_HOLD_KP 100.0f
-#define DM4310_CAN2_HOLD_KD 2.2f
-#define DM4310_HOME_DEADBAND_RAD 0.015f
 #define DM4310_CTRL_MODE_MIT 1U
 #define DM4310_REG_CTRL_MODE 0x0AU
 #define DM4310_REG_WRITE_ID 0x7FFU
-
-struct dm4310_can1_home_record {
-	uint32_t magic;
-	uint32_t version;
-	float pos_rad[DM4310_HOME_MOTOR_COUNT];
-};
 
 volatile struct dm4310_driver g_dm4310 = {
 	.magic = DM4310_MAGIC,
@@ -158,34 +137,6 @@ static int dm4310_write_u32_register(uint8_t motor_idx, uint8_t reg, uint32_t va
 	return ret;
 }
 
-static uint8_t dm4310_home_motors_online(void)
-{
-	for (int motor = 0; motor < DM4310_HOME_MOTOR_COUNT; motor++) {
-		if (g_dm4310.motor[motor].online == 0U) {
-			return 0U;
-		}
-	}
-	return 1U;
-}
-
-static float dm4310_home_kp(uint8_t motor_idx)
-{
-	return motor_idx < DM4310_MOTORS_ON_CAN1 ? DM4310_CAN1_HOLD_KP : DM4310_CAN2_HOLD_KP;
-}
-
-static float dm4310_home_kd(uint8_t motor_idx)
-{
-	return motor_idx < DM4310_MOTORS_ON_CAN1 ? DM4310_CAN1_HOLD_KD : DM4310_CAN2_HOLD_KD;
-}
-
-static uint8_t dm4310_home_in_deadband(uint8_t motor_idx)
-{
-	float target = g_dm4310.can1_home_pos_rad[motor_idx];
-	float actual = g_dm4310.motor[motor_idx].pos_rad;
-
-	return fabsf(target - actual) < DM4310_HOME_DEADBAND_RAD ? 1U : 0U;
-}
-
 static float clampf(float v, float lo, float hi)
 {
 	if (v < lo) return lo;
@@ -267,51 +218,6 @@ void dm4310_pack_control(float pos, float vel, float kp, float kd, float tor,
 	data[5] = (uint8_t)(kd_int >> 4);
 	data[6] = (uint8_t)(((kd_int & 0x0FU) << 4) | (uint8_t)(t_int >> 8));
 	data[7] = (uint8_t)(t_int & 0xFFU);
-}
-
-/**
- * @brief 解码 DM4310 反馈帧
- *
- * 解析 8 字节 CAN 数据帧为电机状态结构体。
- * 反馈帧布局（实际协议，非 datasheet 描述）：
- * - D0[3:0] = 电机 ID
- * - D0[7:4] = 电机状态
- * - D1-D2 = 位置（16-bit 大端）
- * - D3-D4[7:4] = 速度（12-bit）
- * - D4[3:0]-D5 = 力矩（12-bit）
- * - D6 = MOS 温度
- * - D7 = 线圈温度
- *
- * @param data 8 字节 CAN 帧数据
- * @param[out] out 解码后的电机状态
- * @return true 解码成功，false ID 无效或超出范围
- */
-bool dm4310_decode_feedback(const uint8_t data[8],
-			    struct dm4310_motor_status *out)
-{
-	uint8_t motor_id;
-	int p_int, v_int, t_int;
-
-	motor_id = (uint8_t)(data[0] & 0x0FU);
-	if (motor_id == 0U || motor_id > DM4310_MOTOR_COUNT) {
-		return false;
-	}
-
-	p_int = ((int)data[1] << 8) | (int)data[2];
-	v_int = ((int)data[3] << 4) | ((int)data[4] >> 4);
-	t_int = (((int)data[4] & 0x0F) << 8) | (int)data[5];
-
-	out->motor_state = (uint8_t)(data[0] >> 4);
-	out->pos_rad = uint_to_float(p_int, DM4310_P_MIN, DM4310_P_MAX, 16);
-	out->vel_radps = uint_to_float(v_int, DM4310_V_MIN, DM4310_V_MAX, 12);
-	out->torque_nm = uint_to_float(t_int, DM4310_T_MIN, DM4310_T_MAX, 12);
-	out->mos_temp = data[6];
-	out->coil_temp = data[7];
-	out->rx_count++;
-	out->last_ms = k_uptime_get_32();
-	out->online = 1U;
-
-	return true;
 }
 
 static int dm4310_send_raw(uint16_t std_id, const uint8_t data[8])
@@ -482,18 +388,10 @@ int dm4310_init(void)
 		return g_dm4310.init_ret;
 	}
 
-	g_dm4310.can1_home_load_ret = -ENOTSUP;
-#if DM4310_CAN1_HOME_USE_FLASH != 0
-	g_dm4310.can1_home_load_ret = dm4310_nvs_init();
-	if (g_dm4310.can1_home_load_ret == 0) {
-		g_dm4310.can1_home_load_ret = dm4310_load_can1_home();
-	}
-#endif
-
 	g_dm4310.ready = 1U;
 	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
-		g_dm4310.hold_kp[i] = 90.0f;
-		g_dm4310.hold_kd[i] = 1.8f;
+		g_dm4310.hold_kp[i] = 0.01f;
+		g_dm4310.hold_kd[i] = 0.001f;
 	}
 
 	return 0;
@@ -509,14 +407,6 @@ void dm4310_poll_rx(void)
 {
 	drain_rx();
 	refresh_online_mask();
-
-#if DM4310_CAN1_HOME_ENABLED != 0
-	if (g_dm4310.can1_home_valid == 0U && g_dm4310.can1_home_enable_ticks == 0U) {
-		g_dm4310.can1_home_enable_ticks = DM4310_CAN1_HOME_MODE_TICKS +
-						       DM4310_CAN1_HOME_ENABLE_TICKS;
-	}
-
-#endif
 }
 
 /**
@@ -541,85 +431,6 @@ int dm4310_tick(void)
 	uint32_t tick;
 	uint8_t data[8];
 	int ret = 0;
-	drain_rx();
-	refresh_online_mask();
-
-	#if DM4310_OUTPUT_ENABLED == 0
-	dm4310_hold_reset();
-	g_dm4310.loops++;
-	return 0;
-	#endif
-
-#if DM4310_CAN1_HOME_ENABLED != 0
-	if (g_dm4310.can1_home_valid != 0U) {
-		g_dm4310.can1_home_active = 1U;
-		for (int n = 0; n < DM4310_MOTOR_COUNT; n++) {
-			if (g_dm4310.tx_index >= DM4310_MOTOR_COUNT) {
-				g_dm4310.tx_index = 0;
-			}
-			idx = g_dm4310.tx_index;
-			if (idx >= DM4310_HOME_START_IDX && idx < DM4310_HOME_MOTOR_COUNT) {
-				if (g_dm4310.can1_home_enable_ticks > 0U) {
-					dm4310_pack_special(DM4310_CMD_ENABLE_TAIL, data);
-					g_dm4310.can1_home_enable_ticks--;
-				} else if (dm4310_home_in_deadband(idx) != 0U) {
-					dm4310_pack_control(g_dm4310.motor[idx].pos_rad, 0.0f,
-							    0.0f, dm4310_home_kd(idx), 0.0f, data);
-				} else {
-					dm4310_pack_control(g_dm4310.can1_home_pos_rad[idx], 0.0f,
-							    dm4310_home_kp(idx), dm4310_home_kd(idx), 0.0f, data);
-				}
-			} else {
-				dm4310_pack_special(DM4310_CMD_DISABLE_TAIL, data);
-			}
-			ret = dm4310_send_raw(DM4310_CAN_TX_ID_BASE + idx, data);
-			g_dm4310.tx_index++;
-		}
-		g_dm4310.loops++;
-		return ret;
-	}
-
-	for (int n = 0; n < DM4310_MOTOR_COUNT; n++) {
-		if (g_dm4310.tx_index >= DM4310_MOTOR_COUNT) {
-			g_dm4310.tx_index = 0;
-		}
-		idx = g_dm4310.tx_index;
-		if (idx >= DM4310_HOME_START_IDX && idx < DM4310_HOME_MOTOR_COUNT) {
-			if (g_dm4310.can1_home_enable_ticks > DM4310_CAN1_HOME_ENABLE_TICKS) {
-				ret = dm4310_write_u32_register(idx, DM4310_REG_CTRL_MODE,
-								DM4310_CTRL_MODE_MIT);
-				g_dm4310.can1_home_enable_ticks--;
-				g_dm4310.tx_index++;
-				continue;
-			}
-			dm4310_pack_special(DM4310_CMD_ENABLE_TAIL, data);
-			if (g_dm4310.can1_home_enable_ticks > 0U) {
-				g_dm4310.can1_home_enable_ticks--;
-			}
-		} else {
-			dm4310_pack_special(DM4310_CMD_DISABLE_TAIL, data);
-		}
-		ret = dm4310_send_raw(DM4310_CAN_TX_ID_BASE + idx, data);
-		g_dm4310.tx_index++;
-	}
-	g_dm4310.loops++;
-	return ret;
-#endif
-
-#if DM4310_NORMAL_OUTPUT_ENABLED == 0
-	dm4310_hold_reset();
-	for (int n = 0; n < DM4310_MOTOR_COUNT; n++) {
-		if (g_dm4310.tx_index >= DM4310_MOTOR_COUNT) {
-			g_dm4310.tx_index = 0;
-		}
-		idx = g_dm4310.tx_index;
-		dm4310_pack_special(DM4310_CMD_DISABLE_TAIL, data);
-		ret = dm4310_send_raw(DM4310_CAN_TX_ID_BASE + idx, data);
-		g_dm4310.tx_index++;
-	}
-	g_dm4310.loops++;
-	return ret;
-#endif
 
 	if (g_dm4310.bringup_done) {
 		/* 站立模式增益爬坡: 每 tick 向目标 KP/KD 线性逼近一步 */
@@ -719,98 +530,6 @@ int dm4310_tick(void)
 	g_dm4310.bringup_done = all_done;
 	g_dm4310.loops++;
 	return ret;
-}
-
-int dm4310_save_can1_home_current(void)
-{
-#if DM4310_CAN1_HOME_USE_FLASH != 0
-	struct dm4310_can1_home_record record = {
-		.magic = DM4310_CAN1_HOME_MAGIC,
-		.version = DM4310_CAN1_HOME_VERSION,
-	};
-	struct dm4310_can1_home_record old_record;
-	int ret;
-
-	if (dm4310_nvs_ready == 0U) {
-		ret = dm4310_nvs_init();
-		if (ret < 0) {
-			g_dm4310.can1_home_save_ret = ret;
-			return ret;
-		}
-	}
-
-	if (dm4310_home_motors_online() == 0U) {
-		g_dm4310.can1_home_save_ret = -ENOTCONN;
-		return g_dm4310.can1_home_save_ret;
-	}
-
-	ret = flash_read(dm4310_nvs.flash_device, dm4310_nvs.offset,
-			 &old_record, sizeof(old_record));
-	if (ret == 0 && old_record.magic == DM4310_CAN1_HOME_MAGIC &&
-	    old_record.version == DM4310_CAN1_HOME_VERSION) {
-		for (int motor = 0; motor < DM4310_HOME_MOTOR_COUNT; motor++) {
-			record.pos_rad[motor] = old_record.pos_rad[motor];
-		}
-	} else {
-		for (int motor = 0; motor < DM4310_HOME_MOTOR_COUNT; motor++) {
-			record.pos_rad[motor] = g_dm4310.motor[motor].pos_rad;
-		}
-	}
-
-	for (int motor = 0; motor < DM4310_HOME_MOTOR_COUNT; motor++) {
-		record.pos_rad[motor] = g_dm4310.motor[motor].pos_rad;
-	}
-
-	ret = flash_erase(dm4310_nvs.flash_device, dm4310_nvs.offset, dm4310_storage_sector_size);
-	if (ret < 0) {
-		g_dm4310.can1_home_save_ret = ret;
-		return ret;
-	}
-
-	ret = flash_write(dm4310_nvs.flash_device, dm4310_nvs.offset, &record, sizeof(record));
-	if (ret < 0) {
-		g_dm4310.can1_home_save_ret = ret;
-		return ret;
-	}
-
-	for (int motor = 0; motor < DM4310_HOME_MOTOR_COUNT; motor++) {
-		g_dm4310.can1_home_pos_rad[motor] = record.pos_rad[motor];
-	}
-	g_dm4310.can1_home_valid = 1U;
-	g_dm4310.can1_home_enable_ticks = DM4310_CAN1_HOME_MODE_TICKS +
-					       DM4310_CAN1_HOME_ENABLE_TICKS;
-	g_dm4310.can1_home_active = 1U;
-	g_dm4310.can1_home_auto_saved = 1U;
-	g_dm4310.can1_home_save_ret = 0;
-
-	return 0;
-#else
-	ARG_UNUSED(g_dm4310);
-	g_dm4310.can1_home_save_ret = -ENOTSUP;
-	return -ENOTSUP;
-#endif
-}
-
-int dm4310_hold_positions(const float target[DM4310_MOTOR_COUNT])
-{
-#if DM4310_NORMAL_OUTPUT_ENABLED == 0
-	ARG_UNUSED(target);
-	g_dm4310.hold_updates = 0U;
-	return -EACCES;
-#else
-	/*
-	 * 使用饱和赋值而非自增，避免 uint32_t 溢出归零时
-	 * 产生一帧全零控制命令导致电机瞬间失能。
-	 */
-	g_dm4310.hold_updates = 1U;
-	for (int i = 0; i < DM4310_MOTOR_COUNT; i++) {
-		float t = target[i] + g_dm_offset[i];
-		if (t > DM4310_P_MAX) t = DM4310_P_MAX;
-		else if (t < DM4310_P_MIN) t = DM4310_P_MIN;
-		g_dm4310.hold_pos_rad[i] = t;
-	}
-	return 0;
-#endif
 }
 
 void dm4310_hold_reset(void)
@@ -923,6 +642,18 @@ int dm4310_set_pos_with_offset(uint8_t motor_id, float target_kin)
 	g_dm4310.hold_pos_rad[idx] = target;
 	g_dm4310.hold_updates = 1U;
 	return 0;
+}
+
+void dm4310_set_feedforward_tau(uint8_t motor_id, float tau_nm)
+{
+	if (motor_id < 1U || motor_id > DM4310_MOTOR_COUNT) return;
+	g_dm4310.feedforward_tau[motor_id - 1U] = tau_nm;
+}
+
+float dm4310_get_hold_pos(uint8_t motor_id)
+{
+	if (motor_id < 1U || motor_id > DM4310_MOTOR_COUNT) return 0.0f;
+	return g_dm4310.hold_pos_rad[motor_id - 1U];
 }
 
 int dm4310_balance_enable(uint32_t ramp_ticks)

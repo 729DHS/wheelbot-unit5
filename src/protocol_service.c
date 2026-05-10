@@ -228,8 +228,8 @@ static void handle_status(void)
 	/* FK 计算末端位姿 */
 	float ta_L = lk_m1_to_theta_a(m[0]);
 	float tb_L = lk_m2_to_theta_b(m[1]);
-	float ta_R = lk_m4_to_theta_a(m[3]);
-	float tb_R = lk_m3_to_theta_b(m[2]);
+	float ta_R = lk_m3_to_theta_a(m[2]);
+	float tb_R = lk_m4_to_theta_b(m[3]);
 	float h_L, phi_L, h_R, phi_R;
 	lk_forward(ta_L, tb_L, NULL, &h_L, &phi_L);
 	lk_forward(ta_R, tb_R, NULL, &h_R, &phi_R);
@@ -345,8 +345,8 @@ void proto_telemetry_tick(void)
 	}
 	float ta_L = lk_m1_to_theta_a(m[0]);
 	float tb_L = lk_m2_to_theta_b(m[1]);
-	float ta_R = lk_m4_to_theta_a(m[3]);
-	float tb_R = lk_m3_to_theta_b(m[2]);
+	float ta_R = lk_m3_to_theta_a(m[2]);
+	float tb_R = lk_m4_to_theta_b(m[3]);
 	float h_L, phi_L, h_R, phi_R;
 	lk_forward(ta_L, tb_L, NULL, &h_L, &phi_L);
 	lk_forward(ta_R, tb_R, NULL, &h_R, &phi_R);

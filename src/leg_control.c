@@ -14,7 +14,7 @@
 #include <math.h>
 #include <zephyr/sys/printk.h>
 
-#define EST_FOOT_FORCE_N  20.0f
+#define EST_FOOT_FORCE_N  0.0f  /* 暂时关闭前馈, 纯位置环测试直线 */
 #define MOTOR_DELTA_LIMIT_RAD LK_MOTOR_MAX_DELTA_RAD
 #define JOINT_MARGIN_RAD   LK_THETA_MARGIN_RAD
 
@@ -27,8 +27,8 @@ static void compute_feedforward(float h_mm, float phi_rad,
 {
 	float Px = -h_mm * sinf(phi_rad);
 	float cos_tb = cosf(theta_b);
-	g_dm4310.feedforward_tau[m1 - 1] = -Px * EST_FOOT_FORCE_N / 1000.0f;
-	g_dm4310.feedforward_tau[m2 - 1] = -LK_L2_MM * cos_tb * EST_FOOT_FORCE_N / 1000.0f;
+	dm4310_set_feedforward_tau(m1, -Px * EST_FOOT_FORCE_N / 1000.0f);
+	dm4310_set_feedforward_tau(m2, -LK_L2_MM * cos_tb * EST_FOOT_FORCE_N / 1000.0f);
 }
 
 static bool joint_within_limits(float ta, float tb)
@@ -108,12 +108,17 @@ int leg_move_to_left(float h_mm, float phi_rad)
 	float motor_a = lk_theta_a_to_m1(ta);
 	float motor_b = lk_theta_b_to_m2(tb);
 
-	float prev_a = g_dm4310.hold_pos_rad[0];
-	float prev_b = g_dm4310.hold_pos_rad[1];
-	if (fabsf(motor_a - prev_a) > MOTOR_DELTA_LIMIT_RAD)
-		motor_a = prev_a + (motor_a > prev_a ? MOTOR_DELTA_LIMIT_RAD : -MOTOR_DELTA_LIMIT_RAD);
-	if (fabsf(motor_b - prev_b) > MOTOR_DELTA_LIMIT_RAD)
-		motor_b = prev_b + (motor_b > prev_b ? MOTOR_DELTA_LIMIT_RAD : -MOTOR_DELTA_LIMIT_RAD);
+	float prev_a = dm4310_get_hold_pos(1);
+	float prev_b = dm4310_get_hold_pos(2);
+	/* 同比例缩放: 防止独立截断破坏 A/B 运动比例 → 末端走弧线 */
+	float da = motor_a - prev_a;
+	float db = motor_b - prev_b;
+	float m = fmaxf(fabsf(da), fabsf(db));
+	if (m > MOTOR_DELTA_LIMIT_RAD) {
+		float s = MOTOR_DELTA_LIMIT_RAD / m;
+		motor_a = prev_a + da * s;
+		motor_b = prev_b + db * s;
+	}
 
 	compute_feedforward(h_clamped, phi_rad, ta, tb, 1, 2);
 	dm4310_set_pos_with_offset(1, motor_a);
@@ -149,19 +154,23 @@ int leg_move_to_right(float h_mm, float phi_rad)
 	prev_ta_right = ta;
 	prev_tb_right = tb;
 
-	float motor_a = lk_theta_a_to_m4(ta);
-	float motor_b = lk_theta_b_to_m3(tb);
+	float motor_a = lk_theta_a_to_m3(ta);
+	float motor_b = lk_theta_b_to_m4(tb);
 
-	float prev_a = g_dm4310.hold_pos_rad[3];
-	float prev_b = g_dm4310.hold_pos_rad[2];
-	if (fabsf(motor_a - prev_a) > MOTOR_DELTA_LIMIT_RAD)
-		motor_a = prev_a + (motor_a > prev_a ? MOTOR_DELTA_LIMIT_RAD : -MOTOR_DELTA_LIMIT_RAD);
-	if (fabsf(motor_b - prev_b) > MOTOR_DELTA_LIMIT_RAD)
-		motor_b = prev_b + (motor_b > prev_b ? MOTOR_DELTA_LIMIT_RAD : -MOTOR_DELTA_LIMIT_RAD);
+	float prev_a = dm4310_get_hold_pos(3);
+	float prev_b = dm4310_get_hold_pos(4);
+	float da = motor_a - prev_a;
+	float db = motor_b - prev_b;
+	float m = fmaxf(fabsf(da), fabsf(db));
+	if (m > MOTOR_DELTA_LIMIT_RAD) {
+		float s = MOTOR_DELTA_LIMIT_RAD / m;
+		motor_a = prev_a + da * s;
+		motor_b = prev_b + db * s;
+	}
 
 	compute_feedforward(h_clamped, phi_rad, ta, tb, 3, 4);
-	dm4310_set_pos_with_offset(3, motor_b);
-	dm4310_set_pos_with_offset(4, motor_a);
+	dm4310_set_pos_with_offset(3, motor_a);
+	dm4310_set_pos_with_offset(4, motor_b);
 	return 0;
 }
 
@@ -174,11 +183,52 @@ int leg_move_all(float h_mm, float phi_rad)
 	if ((dbg_cnt++ % 50) == 0) {
 		printk("LEG: h=%.1f phi=%.1f° | tgt M1=%.4f M2=%.4f M3=%.4f M4=%.4f\n",
 		       (double)h_mm, (double)(phi_rad*180/M_PI),
-		       (double)g_dm4310.hold_pos_rad[0], (double)g_dm4310.hold_pos_rad[1],
-		       (double)g_dm4310.hold_pos_rad[2], (double)g_dm4310.hold_pos_rad[3]);
+		       (double)dm4310_get_hold_pos(1), (double)dm4310_get_hold_pos(2),
+		       (double)dm4310_get_hold_pos(3), (double)dm4310_get_hold_pos(4));
 	}
 
 	return (ret_l != 0) ? ret_l : ret_r;
+}
+
+/* 直接设置腿位置 (无增量限制, Shell 调试用) */
+int leg_set_left(float h_mm, float phi_rad)
+{
+	float ta, tb;
+	float h_clamped = (h_mm < LK_H_SAFE_MIN) ? LK_H_SAFE_MIN : h_mm;
+
+	if (ik_safe(h_clamped, phi_rad, prev_ta_left, prev_tb_left, &ta, &tb) != LK_OK)
+		return -1;
+
+	prev_ta_left = ta;
+	prev_tb_left = tb;
+
+	float motor_a = lk_theta_a_to_m1(ta);
+	float motor_b = lk_theta_b_to_m2(tb);
+
+	compute_feedforward(h_clamped, phi_rad, ta, tb, 1, 2);
+	dm4310_set_pos_with_offset(1, motor_a);
+	dm4310_set_pos_with_offset(2, motor_b);
+	return 0;
+}
+
+int leg_set_right(float h_mm, float phi_rad)
+{
+	float ta, tb;
+	float h_clamped = (h_mm < LK_H_SAFE_MIN) ? LK_H_SAFE_MIN : h_mm;
+
+	if (ik_safe(h_clamped, phi_rad, prev_ta_right, prev_tb_right, &ta, &tb) != LK_OK)
+		return -1;
+
+	prev_ta_right = ta;
+	prev_tb_right = tb;
+
+	float motor_a = lk_theta_a_to_m3(ta);
+	float motor_b = lk_theta_b_to_m4(tb);
+
+	compute_feedforward(h_clamped, phi_rad, ta, tb, 3, 4);
+	dm4310_set_pos_with_offset(3, motor_a);
+	dm4310_set_pos_with_offset(4, motor_b);
+	return 0;
 }
 
 void leg_init_prev_left(float ta, float tb)
@@ -202,8 +252,8 @@ void leg_diag(float h_mm, float phi_rad)
 	/* 当前 FK */
 	float cur_ta_L = lk_m1_to_theta_a(g_dm4310.motor[0].pos_rad);
 	float cur_tb_L = lk_m2_to_theta_b(g_dm4310.motor[1].pos_rad);
-	float cur_ta_R = lk_m4_to_theta_a(g_dm4310.motor[3].pos_rad);
-	float cur_tb_R = lk_m3_to_theta_b(g_dm4310.motor[2].pos_rad);
+	float cur_ta_R = lk_m3_to_theta_a(g_dm4310.motor[2].pos_rad);
+	float cur_tb_R = lk_m4_to_theta_b(g_dm4310.motor[3].pos_rad);
 
 	printk("=== DIAG h=%.1f phi=%.1f° ===\n",
 	       (double)h_mm, (double)(phi_rad * 180.0 / M_PI));
@@ -256,13 +306,13 @@ void leg_diag(float h_mm, float phi_rad)
 
 	lk_error_t eR = ik_safe(h, phi_rad, prev_ta_right, prev_tb_right, &ta_R, &tb_R);
 	if (eR == LK_OK) {
-		float m4 = lk_theta_a_to_m4(ta_R);
-		float m3 = lk_theta_b_to_m3(tb_R);
+		float m3 = lk_theta_a_to_m3(ta_R);
+		float m4 = lk_theta_b_to_m4(tb_R);
 		printk("  -> sel: ta=%.1f° tb=%.1f° ab=%.1f°\n",
 		       (double)(ta_R*180/M_PI), (double)(tb_R*180/M_PI),
 		       (double)((tb_R-ta_R)*180/M_PI));
-		printk("  -> M4=%.4f M3=%.4f (motor rad)\n",
-		       (double)m4, (double)m3);
+		printk("  -> M3=%.4f M4=%.4f (motor rad)\n",
+		       (double)m3, (double)m4);
 	} else {
 		printk("  -> IK FAIL: %d\n", eR);
 	}

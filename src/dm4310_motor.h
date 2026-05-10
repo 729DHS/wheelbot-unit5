@@ -186,19 +186,6 @@ void dm4310_poll_rx(void);
 int dm4310_tick(void);
 
 /**
- * @brief 设置四台电机的目标位置
- *
- * 将目标位置写入驱动内部缓冲区，下一次 dm4310_tick() 调用时发送。
- * 实际力矩由各电机的 hold_kp/hold_kd 决定：
- * - KP=0 且 KD=0：零力矩，电机可被外力自由拖动且不会回弹
- * - KP>0：高刚度位置保持
- *
- * @param target 四台电机的目标位置数组（弧度）
- * @return 0 成功，-EACCES 表示正常输出未启用
- */
-int dm4310_hold_positions(const float target[DM4310_MOTOR_COUNT]);
-
-/**
  * @brief 保存 CAN1 零点位置到 Flash（当前项目禁用）
  * @return 0 成功，负值错误码
  */
@@ -258,6 +245,20 @@ const volatile struct dm4310_motor_status *dm4310_get(uint8_t motor_id);
 int dm4310_set_pos_with_offset(uint8_t motor_id, float target_kin);
 
 /**
+ * @brief 设置单台电机力矩前馈
+ * @param motor_id  电机 ID（1-4）
+ * @param tau_nm    前馈力矩 (Nm)
+ */
+void dm4310_set_feedforward_tau(uint8_t motor_id, float tau_nm);
+
+/**
+ * @brief 获取单台电机当前位置保持目标
+ * @param motor_id  电机 ID（1-4）
+ * @return 目标位置 (rad)
+ */
+float dm4310_get_hold_pos(uint8_t motor_id);
+
+/**
  * @brief 一键切入站立模式
  *
  * 将四台电机从拖动模式 (KP=0.01/KD=0.001) 切换到高刚度站立模式。
@@ -273,6 +274,5 @@ int dm4310_balance_enable(uint32_t ramp_ticks);
 
 void dm4310_pack_special(uint8_t tail, uint8_t data[8]);
 void dm4310_pack_control(float pos, float vel, float kp, float kd, float tor, uint8_t data[8]);
-bool dm4310_decode_feedback(const uint8_t data[8], struct dm4310_motor_status *out);
 
 #endif
